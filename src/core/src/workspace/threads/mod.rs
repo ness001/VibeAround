@@ -2,6 +2,7 @@
 
 pub mod attachment;
 pub mod runtime;
+pub mod session_config;
 pub mod store;
 
 pub use attachment::{RouteAttachment, RouteAttachmentProjection};

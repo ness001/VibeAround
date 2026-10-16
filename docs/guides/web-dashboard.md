@@ -38,11 +38,22 @@ Dashboard panels mirror what `va status` reports — channel plugin states (with
 
 ## Mobile
 
-The dashboard is responsive; the chat surface includes mobile command controls so thread commands are tappable. Pair once (a 60-second code confirmed from a trusted surface), then a tunneled dashboard on a phone behaves like the desktop one.
+The dashboard is responsive; the chat surface includes mobile command controls so thread commands are tappable.
+
+### Scan to connect
+
+1. On the computer, open Desktop's **Remote** page and find **Connect phone**.
+2. Select an active HTTPS tunnel, or enter an externally managed tunnel URL on the computer.
+3. Generate a QR code. On iPhone, scan it with Camera and tap the link to open Safari.
+4. The browser exchanges the one-use ticket and opens the dashboard automatically; there is no auth token to type.
+
+The code has a short [pairing-ticket lifetime](../reference/timers-and-limits.md#lifecycles-and-ttls). If it expires or was already used, generate another on the computer. QR expiry does not disconnect an already paired browser or expire the tunnel. Anyone who can scan a still-valid code can obtain owner access: keep the image private.
+
+The QR is rendered locally and contains a random ticket in the URL fragment, not the daemon's owner token. The phone removes the fragment before exchanging it. IM-code pairing and manual token entry remain available as fallbacks. This is still the shared owner session, not a separately revocable device account.
 
 ---
 
 *Source anchors: `src/server/src/web_server/` (ws_chat, ws_pty, preview/), `src/web/src/` (SPA), `src/core/src/pty/` (sessions), `src/core/src/previews/` (owner/share, TTL), `src/skills/va-preview/`.*
-*Last verified: v0.7.24*
+*Existing dashboard reference: v0.7.24. QR pairing verified on 2026-09-18 with a Windows source build, native tests, real desktop QR rendering, and public login in a mobile-sized Chromium browser. Physical iPhone/Safari scanning remains a user check.*
 
 <sub>[◀ Desktop app guide](desktop-app.md) · [Documentation index](../README.md) · [IM usage ▶](im-usage.md)</sub>

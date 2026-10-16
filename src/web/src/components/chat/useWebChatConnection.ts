@@ -17,6 +17,7 @@ import type {
   ChatMessage,
   ChatMeta,
   ChatSessionSelection,
+  ContextUsage,
   PendingPermission,
   SessionModeState,
 } from "./chatTypes";
@@ -40,6 +41,16 @@ import {
   parseSessionModeState,
 } from "./chatSessionMode";
 import { currentUnixSeconds } from "./chatTime";
+import { flushSessionMode, selectSessionMode, type ModeChangeContext, type QueuedModeChange } from "./sessionModeChange";
+import {
+  canSetSessionConfigOption,
+  findSessionConfigOption,
+  EMPTY_SESSION_CONTROLS,
+  parseContextUsage,
+  parseSessionConfig,
+  parseSessionConfigOptions,
+  sessionControlsReducer,
+} from "./chatSessionConfig";
 
 interface UseWebChatConnectionOptions {
   chatId?: string;
@@ -47,6 +58,7 @@ interface UseWebChatConnectionOptions {
 }
 
 const CACHE_WRITE_DEBOUNCE_MS = 350;
+const SESSION_CONFIG_TIMEOUT_MS = 45_000;
 const USER_CONTENT_PART_ID_PREFIX = "user-content";
 const COMPACTION_NOTICE_DROP_RATIO = 0.55;
 const COMPACTION_NOTICE_MIN_WINDOW_RATIO = 0.25;
@@ -73,13 +85,6 @@ type MessageUpdate = (prev: ChatMessage[]) => ChatMessage[];
 type UsageSnapshot = {
   used: number;
   size: number;
-};
-
-type SessionUpdateLike = {
-  sessionUpdate?: unknown;
-  _meta?: unknown;
-  used?: unknown;
-  size?: unknown;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -113,15 +118,6 @@ function isCompactionUpdate(update: unknown): boolean {
   const name = sessionUpdateName(update);
   if (name?.toLowerCase().includes("compact")) return true;
   return hasCompactionSignal(asRecord(update)?._meta);
-}
-
-function usageSnapshot(update: unknown): UsageSnapshot | null {
-  const record = asRecord(update) as SessionUpdateLike | null;
-  if (!record || record.sessionUpdate !== "usage_update") return null;
-  if (typeof record.used !== "number" || typeof record.size !== "number") return null;
-  if (!Number.isFinite(record.used) || !Number.isFinite(record.size)) return null;
-  if (record.used < 0 || record.size <= 0) return null;
-  return { used: record.used, size: record.size };
 }
 
 function isCompactionUsageDrop(
@@ -167,9 +163,39 @@ export function useWebChatConnection({
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
   const [sessionMode, setSessionModeState] = useState<SessionModeState | null>(null);
+  const [queuedModeId, setQueuedModeId] = useState<string | null>(null);
+  const queuedModeRef = useRef<QueuedModeChange | null>(null);
+  const sessionIdRef = useRef<string | undefined>(undefined);
+  const modeStateRef = useRef<SessionModeState | null>(null);
+  modeStateRef.current = sessionMode;
+  const cancelQueuedMode = useCallback(() => {
+    queuedModeRef.current = null;
+    setQueuedModeId(null);
+  }, []);
+  const [sessionControls, setSessionControls] = useState(EMPTY_SESSION_CONTROLS);
+  const sessionControlsRef = useRef(EMPTY_SESSION_CONTROLS);
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  const updateSessionControls = useCallback((action: Parameters<typeof sessionControlsReducer>[1]) => {
+    const next = sessionControlsReducer(sessionControlsRef.current, action);
+    sessionControlsRef.current = next;
+    const queued = queuedModeRef.current;
+    if (queued && (action.type === "snapshot" || action.type === "options")) {
+      const options = next.config?.configOptions ?? [];
+      const model = findSessionConfigOption(options, "model")?.currentValue ?? null;
+      const mode = options.find(option => option.configId === queued.configId);
+      if (model !== queued.modelId || (queued.source === "config_option"
+        && (!mode?.options.some(option => option.value === queued.modeId) || mode.currentValue === queued.modeId))) {
+        queuedModeRef.current = null;
+        setQueuedModeId(null);
+      }
+    }
+    setSessionControls(next);
+  }, []);
   const [resumeReplay, setResumeReplay] = useState<ResumeReplayState | null>(null);
   const [multiAgentTurns, setMultiAgentTurns] = useState<MultiAgentTurn[]>([]);
   const [subagents, setSubagents] = useState<ThreadAgent[]>([]);
+  const subagentsRef = useRef<ThreadAgent[]>([]);
+  subagentsRef.current = subagents;
   const [subagentMessages, setSubagentMessages] = useState<
     Record<string, ChatMessage[]>
   >({});
@@ -286,6 +312,21 @@ export function useWebChatConnection({
   }, []);
 
   useEffect(() => {
+    const configId = sessionControls.pendingConfigId;
+    if (!configId) return;
+    const timeout = setTimeout(() => {
+      if (sessionControlsRef.current.pendingConfigId !== configId) return;
+      cancelQueuedMode();
+      updateSessionControls({ type: "settled" });
+      applyMessageUpdate((previous) => appendStandaloneAssistantMessage(
+        previous,
+        t("Chat settings request timed out. The change was not confirmed. Reconnect before retrying."),
+      ));
+    }, SESSION_CONFIG_TIMEOUT_MS);
+    return () => clearTimeout(timeout);
+  }, [applyMessageUpdate, cancelQueuedMode, sessionControls.pendingConfigId, t, updateSessionControls]);
+
+  useEffect(() => {
     messagesRef.current = messages;
     scheduleReplayCacheWrite();
     scheduleActiveTranscriptCacheWrite();
@@ -300,8 +341,10 @@ export function useWebChatConnection({
 
   useEffect(() => {
     function markDisconnected(clearPermissions: boolean) {
+      cancelQueuedMode();
       setConnected(false);
       setStreaming(false);
+      updateSessionControls({ type: "settled" });
       setMessages((prev) => settleStreamActivitiesMessage(prev));
       promptInFlightRef.current = false;
       turnActiveRef.current = false;
@@ -314,8 +357,14 @@ export function useWebChatConnection({
       abortResumeState();
     }
 
+    cancelQueuedMode();
+    sessionIdRef.current = undefined;
+    setConnected(false);
+    updateSessionControls({ type: "reset" });
+    setSessionModeState(null);
+    setContextUsage(null);
+    usageBySessionRef.current.clear();
     if (!chatId) {
-      setConnected(false);
       return;
     }
 
@@ -323,7 +372,11 @@ export function useWebChatConnection({
       socketRef: wsRef,
       url: () =>
         getWebSocketUrl(`/ws/chat?chat_id=${encodeURIComponent(chatId)}`),
-      onOpen: () => setConnected(true),
+      onOpen: () => {
+        setConnected(true);
+        updateSessionControls({ type: "reset" });
+        wsRef.current?.send(JSON.stringify({ type: "get_session_config" }));
+      },
       onMessage: handleSocketMessage,
       onError: () => markDisconnected(false),
       onClose: () => markDisconnected(true),
@@ -367,8 +420,11 @@ export function useWebChatConnection({
           if (pendingResume && pendingResume.sessionId !== parsed.session_id) {
             break;
           }
+          if (sessionIdRef.current !== parsed.session_id) cancelQueuedMode();
+          sessionIdRef.current = parsed.session_id;
           setMeta((prev) => ({ ...prev, sessionId: parsed.session_id }));
           setSessionModeState(null);
+          setContextUsage(null);
           if (activeTranscriptCacheRef.current) {
             activeTranscriptCacheRef.current = {
               ...activeTranscriptCacheRef.current,
@@ -386,6 +442,10 @@ export function useWebChatConnection({
         case "session_info": {
           // The server's own answer, which outranks anything this tab chose.
           const info = parsed.info;
+          if (info.sessionId && sessionIdRef.current !== info.sessionId) {
+            cancelQueuedMode();
+            sessionIdRef.current = info.sessionId;
+          }
           setMeta((prev) => ({
             ...prev,
             threadId: info.threadId,
@@ -417,6 +477,7 @@ export function useWebChatConnection({
           break;
         }
         case "replay_start": {
+          cancelQueuedMode();
           // The server re-renders this session's transcript from the agent's
           // own record; drop the local view and rebuild from the frames.
           replayingSessionRef.current = parsed.session_id;
@@ -444,8 +505,21 @@ export function useWebChatConnection({
           updateResumeReplay(null);
           break;
         }
+        case "session_config": {
+          const config = parseSessionConfig(parsed);
+          if (config) {
+            updateSessionControls({ type: "snapshot", config });
+            const mode = parseModeFromConfigOptions(parsed.config_options);
+            setSessionModeState((previous) => mode
+              ?? (previous?.source === "session_mode" ? previous : null));
+          }
+          break;
+        }
         case "session_mode": {
           setSessionModeState(parseSessionModeState(parsed.session_mode));
+          if (sessionControlsRef.current.pendingConfigId === "session_mode") {
+            updateSessionControls({ type: "settled" });
+          }
           break;
         }
         case "system_text": {
@@ -453,6 +527,11 @@ export function useWebChatConnection({
           abortResumeState();
           const agentId = switchedAgentId(parsed.text);
           if (agentId) {
+            cancelQueuedMode();
+            sessionIdRef.current = undefined;
+            updateSessionControls({ type: "reset" });
+            setContextUsage(null);
+            setSessionModeState(null);
             onAgentSelected?.(agentId, "system");
             setMeta((prev) => ({
               ...prev,
@@ -465,6 +544,8 @@ export function useWebChatConnection({
           break;
         }
         case "error": {
+          cancelQueuedMode();
+          updateSessionControls({ type: "settled" });
           appendErrorToStream(formatErrorMessage(parsed.error));
           setStreaming(false);
           promptInFlightRef.current = false;
@@ -508,11 +589,13 @@ export function useWebChatConnection({
         }
         case "multi_agent_turn": {
           setMultiAgentTurns((prev) => mergeById(prev, [parsed.turn]));
-          setSubagents((prev) => mergeById(prev, parsed.agents));
+          subagentsRef.current = mergeById(subagentsRef.current, parsed.agents);
+          setSubagents(subagentsRef.current);
           break;
         }
         case "subagent_status": {
-          setSubagents((prev) => mergeById(prev, [parsed.agent]));
+          subagentsRef.current = mergeById(subagentsRef.current, [parsed.agent]);
+          setSubagents(subagentsRef.current);
           break;
         }
         case "subagent_acp_notification": {
@@ -545,11 +628,13 @@ export function useWebChatConnection({
         applyMessageUpdate((prev) => applyChatTranscriptUpdate(prev, update, options));
       };
 
-      const usage = usageSnapshot(update);
-      if (usage) {
+      const usage = parseContextUsage(update);
+      if (usage) setContextUsage(usage);
+      if (usage && usage.size !== null) {
+        const snapshot = { used: usage.used, size: usage.size };
         const previous = usageBySessionRef.current.get(notif.sessionId);
-        usageBySessionRef.current.set(notif.sessionId, usage);
-        if (isCompactionUsageDrop(previous, usage)) {
+        usageBySessionRef.current.set(notif.sessionId, snapshot);
+        if (isCompactionUsageDrop(previous, snapshot)) {
           appendCompactionNotice(
             notif.sessionId,
             `usage:${previous?.used}->${usage.used}/${usage.size}`,
@@ -594,11 +679,14 @@ export function useWebChatConnection({
           break;
         }
         case "config_option_update": {
-          setSessionModeState(
-            parseModeFromConfigOptions(
-              (update as { configOptions?: unknown }).configOptions,
-            ),
-          );
+          const configOptions = (update as { configOptions?: unknown }).configOptions;
+          updateSessionControls({
+            type: "options",
+            options: parseSessionConfigOptions(configOptions),
+          });
+          const mode = parseModeFromConfigOptions(configOptions);
+          setSessionModeState((previous) => mode
+            ?? (previous?.source === "session_mode" ? previous : null));
           break;
         }
         case "current_mode_update": {
@@ -650,6 +738,7 @@ export function useWebChatConnection({
     abortResumeState,
     applyMessageUpdate,
     cacheTranscript,
+    cancelQueuedMode,
     chatId,
     clearActiveTranscriptCacheWriteTimer,
     clearReplayCacheWriteTimer,
@@ -657,6 +746,7 @@ export function useWebChatConnection({
     scheduleReplayCacheWrite,
     t,
     updateResumeReplay,
+    updateSessionControls,
   ]);
 
   const sendMessage = useCallback(
@@ -671,11 +761,12 @@ export function useWebChatConnection({
       launchSession,
     }: SendChatMessageRequest) => {
       const trimmed = text.trim();
+      if (queuedModeRef.current || sessionControlsRef.current.pendingConfigId) return false;
       const ws = wsRef.current;
       if ((!trimmed && attachments.length === 0) || !ws || ws.readyState !== WebSocket.OPEN) {
         return false;
       }
-      if (promptInFlightRef.current) return false;
+      if (promptInFlightRef.current || sessionControlsRef.current.pendingConfigId) return false;
 
       const uniqueAttachments = dedupeChatAttachments(attachments);
       promptInFlightRef.current = true;
@@ -756,35 +847,71 @@ export function useWebChatConnection({
     ],
   );
 
-  const setSessionMode = useCallback((modeId: string) => {
+  const sendSessionConfig = useCallback((configId: string, payload: Record<string, string>) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (!ws || ws.readyState !== WebSocket.OPEN || promptInFlightRef.current
+      || turnActiveRef.current || resumeReplayRef.current
+      || sessionControlsRef.current.pendingConfigId) return false;
+    updateSessionControls({ type: "request", configId });
     try {
-      ws.send(JSON.stringify({ type: "set_mode", modeId }));
+      ws.send(JSON.stringify(payload));
       return true;
     } catch (error) {
-      console.warn("[ChatView] failed to set session mode:", error);
+      updateSessionControls({ type: "settled" });
+      applyMessageUpdate((previous) => appendStandaloneAssistantMessage(
+        previous, t("Unable to apply chat settings. Reconnect and try again."),
+      ));
+      console.warn("[ChatView] failed to set session config:", error);
       return false;
     }
-  }, []);
+  }, [applyMessageUpdate, t, updateSessionControls]);
+
+  const modeChangeContext = useCallback((): ModeChangeContext => ({
+    sessionId: sessionIdRef.current,
+    mode: modeStateRef.current,
+    modelId: findSessionConfigOption(sessionControlsRef.current.config?.configOptions ?? [], "model")?.currentValue ?? null,
+    connected: wsRef.current?.readyState === WebSocket.OPEN,
+    replaying: Boolean(resumeReplayRef.current || replayingSessionRef.current),
+    busy: promptInFlightRef.current || turnActiveRef.current || subagentsRef.current.some(agent => agent.status === "running"),
+    pending: Boolean(sessionControlsRef.current.pendingConfigId),
+  }), []);
+
+  const setSessionMode = useCallback((modeId: string) => {
+    const decision = selectSessionMode(modeId, modeChangeContext());
+    if (decision.type === "reject") return false;
+    cancelQueuedMode();
+    if (decision.type === "queue") {
+      queuedModeRef.current = decision.change;
+      setQueuedModeId(modeId);
+      return true;
+    }
+    if (decision.type === "send") return sendSessionConfig(decision.configId, decision.payload);
+    return true;
+  }, [cancelQueuedMode, modeChangeContext, sendSessionConfig]);
+
+  useEffect(() => {
+    const decision = flushSessionMode(queuedModeRef.current, modeChangeContext());
+    if (decision.type === "cancel") cancelQueuedMode();
+    if (decision.type === "send") {
+      // Consume before dispatch, so rerenders/duplicate idle frames cannot retry.
+      cancelQueuedMode();
+      sendSessionConfig(decision.configId, decision.payload);
+    }
+  }, [cancelQueuedMode, connected, meta.sessionId, modeChangeContext, queuedModeId,
+    resumeReplay, sendSessionConfig, sessionControls, sessionMode, streaming, subagents]);
 
   const setSessionConfigOption = useCallback((configId: string, value: string) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    try {
-      ws.send(JSON.stringify({ type: "set_config_option", configId, value }));
-      return true;
-    } catch (error) {
-      console.warn("[ChatView] failed to set session config option:", error);
-      return false;
-    }
-  }, []);
+    if (!canSetSessionConfigOption(sessionControlsRef.current.config, configId, value)) return false;
+    return sendSessionConfig(configId, { type: "set_config_option", configId, value });
+  }, [sendSessionConfig]);
 
   const clearConversationView = useCallback((options?: {
     abortReplay?: boolean;
     preserveMessages?: boolean;
     sendStop?: boolean;
   }) => {
+    cancelQueuedMode();
+    sessionIdRef.current = undefined;
     const ws = wsRef.current;
     const replayContext = resumeReplayRef.current ?? replayCacheContextRef.current;
     const abortedSessionId = replayContext?.sessionId;
@@ -814,6 +941,9 @@ export function useWebChatConnection({
     turnActiveRef.current = false;
     setStreaming(false);
     setPendingPermissions([]);
+    updateSessionControls({ type: "reset" });
+    setSessionModeState(null);
+    setContextUsage(null);
     updateResumeReplay(null);
     if (!options?.preserveMessages) {
       messagesRef.current = [];
@@ -827,9 +957,11 @@ export function useWebChatConnection({
       agentVersion: undefined,
     }));
   }, [
+    cancelQueuedMode,
     clearActiveTranscriptCacheWriteTimer,
     clearReplayCacheContext,
     updateResumeReplay,
+    updateSessionControls,
   ]);
 
   const resumeSession = useCallback(
@@ -984,6 +1116,11 @@ export function useWebChatConnection({
     agents,
     pendingPermissions,
     sessionMode,
+    queuedModeId,
+    cancelQueuedMode,
+    sessionConfig: sessionControls.config,
+    pendingConfigId: sessionControls.pendingConfigId,
+    contextUsage,
     resumeReplay,
     multiAgentTurns,
     subagents,

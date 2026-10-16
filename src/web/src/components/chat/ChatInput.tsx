@@ -32,6 +32,7 @@ import {
 import { cn } from "@/lib/utils";
 import { CHAT_ATTACHMENT_ACCEPT } from "./attachmentTypes";
 import type { ChatAttachment, SessionModeState } from "./chatTypes";
+import { ChatSessionControls, type ChatSessionControlsProps } from "./ChatSessionControls";
 
 export type { ChatSessionSelection } from "./chatTypes";
 
@@ -70,7 +71,11 @@ export interface ChatInputProps {
   contextContent?: ReactNode;
   contextCanSubmit?: boolean;
   sessionMode?: SessionModeState | null;
+  sessionControls?: ChatSessionControlsProps;
   onSessionModeChange?: (value: string) => void;
+  sessionModeDisabledReason?: string;
+  queuedModeId?: string | null;
+  onCancelQueuedMode?: () => void;
   onFilesSelected?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
   placeholder?: string;
@@ -98,7 +103,11 @@ export function ChatInput({
   contextContent,
   contextCanSubmit = false,
   sessionMode,
+  sessionControls,
   onSessionModeChange,
+  sessionModeDisabledReason,
+  queuedModeId,
+  onCancelQueuedMode,
   onFilesSelected,
   onRemoveAttachment,
   placeholder = "Message Claude…",
@@ -190,6 +199,8 @@ export function ChatInput({
   const canSend =
     !disabled &&
     !submitDisabled &&
+    !sessionControls?.pendingConfigId &&
+    !queuedModeId &&
     !attachmentsUploading &&
     (!!value.trim() || attachments.length > 0 || contextCanSubmit);
   const showStop = isStreaming && onStop;
@@ -198,9 +209,13 @@ export function ChatInput({
   const selectedMode = sessionMode?.options.find(
     (option) => option.value === sessionMode.currentValue,
   );
-  const canSelectMode = Boolean(
-    sessionMode && selectedMode && onSessionModeChange && !disabled,
-  );
+  const modeBusy = isStreaming || Boolean(sessionControls?.disabled);
+  const modeReason = sessionModeDisabledReason
+    ?? (disabled ? t("Reconnect or finish loading this session to change its mode.")
+      : sessionControls?.pendingConfigId ? t("Wait for the current settings change to finish.")
+      : !sessionControls?.sessionStarted ? t("Resume or start a session to change its mode.") : undefined);
+  const canSelectMode = Boolean(sessionMode && selectedMode && onSessionModeChange && !modeReason);
+  const queuedMode = sessionMode?.options.find(option => option.value === queuedModeId);
   const uploadingLabel =
     attachmentsUploading && attachmentsUploadingCount > 1
       ? t("Uploading {{count}} files…", { count: attachmentsUploadingCount })
@@ -309,6 +324,16 @@ export function ChatInput({
             )}
           </div>
         )}
+        {sessionControls && (
+          <ChatSessionControls
+            {...sessionControls}
+            disabled={disabled || isStreaming || sessionControls.disabled}
+          />
+        )}
+        {queuedMode && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground">
+          <span>{t("Mode will change to {{mode}} after the current turn finishes.", { mode: queuedMode.name })}</span>
+          <button type="button" onClick={onCancelQueuedMode} className="rounded px-1 py-0.5 underline" aria-label={t("Cancel mode change")}>{t("Cancel")}</button>
+        </div>}
         <div
           className={cn(
             "flex shrink-0 items-center justify-between gap-1.5",
@@ -344,6 +369,9 @@ export function ChatInput({
               <SessionModePicker
                 mode={sessionMode}
                 disabled={!canSelectMode}
+                disabledReason={modeReason}
+                queuedModeId={queuedModeId}
+                busy={modeBusy}
                 onChange={onSessionModeChange}
               />
             )}
@@ -428,16 +456,22 @@ function CommandPicker({
 function SessionModePicker({
   mode,
   disabled,
+  disabledReason,
+  queuedModeId,
+  busy,
   onChange,
 }: {
   mode: SessionModeState;
   disabled: boolean;
+  disabledReason?: string;
+  queuedModeId?: string | null;
+  busy: boolean;
   onChange?: (value: string) => void;
 }) {
   const { t } = useI18n();
   const selected = mode.options.find((option) => option.value === mode.currentValue);
   if (!selected) return null;
-  const pickerLabel = mode.name ?? t("Session mode");
+  const pickerLabel = t("Session mode");
   const Icon = sessionModeIcon(selected.value, selected.name);
 
   return (
@@ -448,7 +482,7 @@ function SessionModePicker({
           disabled={disabled}
           className="flex h-6 max-w-[13rem] shrink items-center gap-1 rounded-sm px-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
           aria-label={`${pickerLabel}: ${selected.name}`}
-          title={selected.description ?? selected.name}
+          title={disabledReason ?? t("Change mode for this session")}
         >
           <Icon className="h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 truncate">{selected.name}</span>
@@ -456,6 +490,9 @@ function SessionModePicker({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-72">
+        <p className="border-b border-border px-2 py-2 text-[11px] text-muted-foreground">
+          {busy ? t("Select a mode to apply after the current turn finishes.") : t("Change mode for this session")}
+        </p>
         {mode.options.map((option) => {
           const OptionIcon = sessionModeIcon(option.value, option.name);
           return (
@@ -466,7 +503,7 @@ function SessionModePicker({
             >
               <OptionIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">{option.name}</span>
+                <span className="block truncate text-xs font-medium">{option.name}{option.value === queuedModeId && <span className="ml-1 text-muted-foreground">({t("Pending")})</span>}</span>
                 {option.description && (
                   <span className="mt-0.5 block line-clamp-3 text-[11px] leading-snug text-muted-foreground">
                     {option.description}

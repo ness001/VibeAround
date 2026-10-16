@@ -2,8 +2,10 @@
 //!
 //! - [`token`] — per-daemon auth token (generation, storage, comparison)
 //! - [`pair`]  — browser pairing via 6-digit code confirmed through IM
+//! - [`qr`]    — one-use, owner-issued QR pairing tickets
 
 pub mod pair;
+pub mod qr;
 pub mod token;
 
 pub use token::{

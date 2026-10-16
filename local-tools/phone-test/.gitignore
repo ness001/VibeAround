@@ -1,0 +1,7 @@
+# Keep runtime credentials and generated state out of the fork.
+data/
+auth.json
+settings.json
+*.output
+*.zip
+*.exe

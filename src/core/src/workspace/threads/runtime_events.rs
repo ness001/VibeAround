@@ -60,6 +60,14 @@ pub(super) fn apply_thread_event_to(thread: &mut WorkspaceThread, event: &Thread
             }
             thread.updated_at = occurred_at.clone();
         }
+        ThreadEvent::SessionPreferencesChanged {
+            occurred_at,
+            preferences,
+            ..
+        } => {
+            thread.session_preferences = preferences.clone();
+            thread.updated_at = occurred_at.clone();
+        }
         ThreadEvent::HostChanged {
             occurred_at,
             host_binding,

@@ -2,8 +2,8 @@
  * PairingGate — browser pairing flow.
  *
  * Shown when the user opens the dashboard without a valid auth token.
- * Displays a 6-digit pairing code that the user sends via IM `/pair`
- * command. The page polls for verification and continues on success.
+ * Redeems a scanned QR invitation, or displays a 6-digit pairing code
+ * that the user sends via IM `/pair`. Continues on verification.
  *
  * Also keeps the legacy "paste token" fallback for advanced users.
  */
@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { pairingDestination, setAuthToken } from "@/lib/auth";
+import type { QrPairingAttempt, QrPairingResult } from "@/lib/qrPairing";
 
 const POLL_INTERVAL_MS = 2000;
 const CODE_TTL_SECS = 60;
@@ -38,8 +39,11 @@ async function copyText(text: string) {
 
 type PairStatus = "loading" | "pending" | "expired" | "verified";
 
-export function PairingGate() {
+export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}) {
   const { t } = useI18n();
+  const [qrStatus, setQrStatus] = useState<"connecting" | QrPairingResult["status"] | null>(
+    qrPairing ? "connecting" : null,
+  );
   const [code, setCode] = useState<string | null>(null);
   const [status, setStatus] = useState<PairStatus>("loading");
   const [remaining, setRemaining] = useState(CODE_TTL_SECS);
@@ -52,6 +56,7 @@ export function PairingGate() {
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number>(0);
   const pairCommand = code ? `/pair ${code}` : "";
+  const qrBusy = qrStatus === "connecting" || qrStatus === "verified";
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -128,9 +133,25 @@ export function PairingGate() {
   }, [stopPolling]);
 
   useEffect(() => {
-    startPairing();
-    return stopPolling;
-  }, [startPairing, stopPolling]);
+    if (!qrPairing) {
+      startPairing();
+      return stopPolling;
+    }
+    let active = true;
+    void qrPairing.redeem().then((result) => {
+      if (active) setQrStatus(result.status);
+    });
+    return () => {
+      active = false;
+      stopPolling();
+    };
+  }, [qrPairing, startPairing, stopPolling]);
+
+  const usePairingCode = () => {
+    if (qrBusy) return;
+    setQrStatus(null);
+    void startPairing();
+  };
 
   useEffect(() => {
     return () => {
@@ -152,6 +173,7 @@ export function PairingGate() {
 
   const submitToken = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (qrBusy) return;
     const trimmed = pasted.trim();
     if (!trimmed) {
       setTokenError(t("Token is required."));
@@ -214,53 +236,76 @@ export function PairingGate() {
           </div>
         </div>
 
-        {/* Pairing code display */}
-        <div className="rounded-lg border border-border bg-card/50 p-6 text-center">
-          {status === "loading" && (
-            <p className="text-sm text-muted-foreground">{t("Generating pairing code…")}</p>
-          )}
-
-          {(status === "pending" || status === "expired") && code && (
-            <>
-              <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {t("Your pairing code")}
-              </p>
-              <p
-                className={`font-mono text-4xl font-bold tracking-[0.3em] ${
-                  status === "expired"
-                    ? "text-muted-foreground/40 line-through"
-                    : "text-foreground"
-                }`}
-              >
-                {code}
-              </p>
-              <div className="mt-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-                {status === "pending" ? (
-                  <>
-                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-primary" />
-                    <span>
-                      {t("Waiting for /pair {{code}} · {{seconds}}s", {
-                        code,
-                        seconds: remaining,
-                      })}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-destructive">{t("Code expired")}</span>
-                )}
-              </div>
-            </>
-          )}
-
-          {status === "verified" && (
-            <p className="text-sm font-medium text-primary">
-              {t("✓ Paired! Continuing…")}
+        {qrStatus && (
+          <div className="space-y-3 rounded-lg border border-border bg-card/50 p-6 text-center" role="status" aria-live="polite">
+            <p className={`text-sm ${qrBusy ? "text-muted-foreground" : "text-destructive"}`}>
+              {qrStatus === "connecting" && t("Connecting this browser…")}
+              {qrStatus === "verified" && t("Paired! Continuing…")}
+              {qrStatus === "expired" && t("This QR code has expired or was already used. Scan a new code from Desktop.")}
+              {qrStatus === "invalid" && t("This QR code is invalid. Scan a new code from Desktop.")}
+              {qrStatus === "failed" && t("Connection failed. Scan a new QR code or use another pairing method.")}
             </p>
-          )}
-        </div>
+            <p className="text-xs text-muted-foreground">
+              {t("QR codes expire after 1 minute and can only be used once.")}
+            </p>
+          </div>
+        )}
+
+        {/* Pairing code display */}
+        {!qrStatus && (
+          <div className="rounded-lg border border-border bg-card/50 p-6 text-center">
+            {status === "loading" && (
+              <p className="text-sm text-muted-foreground">{t("Generating pairing code…")}</p>
+            )}
+
+            {(status === "pending" || status === "expired") && code && (
+              <>
+                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("Your pairing code")}
+                </p>
+                <p
+                  className={`font-mono text-4xl font-bold tracking-[0.3em] ${
+                    status === "expired"
+                      ? "text-muted-foreground/40 line-through"
+                      : "text-foreground"
+                  }`}
+                >
+                  {code}
+                </p>
+                <div className="mt-3 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                  {status === "pending" ? (
+                    <>
+                      <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-primary" />
+                      <span>
+                        {t("Waiting for /pair {{code}} · {{seconds}}s", {
+                          code,
+                          seconds: remaining,
+                        })}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-destructive">{t("Code expired")}</span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {status === "verified" && (
+              <p className="text-sm font-medium text-primary">
+                {t("✓ Paired! Continuing…")}
+              </p>
+            )}
+          </div>
+        )}
+
+        {qrStatus && !qrBusy && (
+          <Button type="button" onClick={usePairingCode} className="w-full">
+            {t("Use an IM pairing code")}
+          </Button>
+        )}
 
         {/* Instructions */}
-        {status !== "verified" && (
+        {!qrStatus && status !== "verified" && (
           <div className="space-y-2">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               {t("How to pair")}
@@ -296,7 +341,7 @@ export function PairingGate() {
         )}
 
         {/* Refresh button when expired */}
-        {status === "expired" && (
+        {!qrStatus && status === "expired" && (
           <Button
             type="button"
             onClick={startPairing}
@@ -307,7 +352,7 @@ export function PairingGate() {
         )}
 
         {/* Token fallback */}
-        {status !== "verified" && (
+        {!qrBusy && status !== "verified" && (
           <details
             className="group rounded-lg border border-border bg-card/50"
             open={showTokenInput}

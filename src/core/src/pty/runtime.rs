@@ -53,6 +53,11 @@ fn set_pty_env(c: &mut CommandBuilder, theme: Option<&str>, extra_env: &[(String
         c.env(key, val);
     }
     c.env_remove("NO_COLOR");
+    // A dashboard terminal is an independent user session even when the app
+    // was started by a Claude tool shell. Claude will mark its own children.
+    for key in crate::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+        c.env_remove(key);
+    }
 }
 
 #[cfg(not(windows))]
@@ -610,6 +615,24 @@ mod tests {
         }
         assert_eq!(PtyTool::Generic.agent_id(), None);
         assert_eq!(PtyTool::from_agent_id("missing"), None);
+    }
+
+    #[test]
+    fn independent_pty_clears_claude_child_markers_without_forcing_descendants() {
+        let mut command = CommandBuilder::new("claude");
+        let extra = vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_CHILD_SESSION".to_string(), "1".to_string()),
+            ("VA_TEST_KEEP".to_string(), "yes".to_string()),
+        ];
+        set_pty_env(&mut command, None, &extra);
+        for key in crate::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+            assert!(command.get_env(key).is_none());
+        }
+        assert_eq!(command.get_env("VA_TEST_KEEP"), Some(std::ffi::OsStr::new("yes")));
+        assert_eq!(command.get_env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"),
+            crate::process::env::child_env().get("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE")
+                .map(std::ffi::OsStr::new));
     }
 
     #[test]

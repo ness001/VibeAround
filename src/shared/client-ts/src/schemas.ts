@@ -394,6 +394,16 @@ export const ChatEventSchema = z.discriminatedUnion("kind", [
     session_mode: z.unknown(),
   }),
   z.object({
+    kind: z.literal("session_config"),
+    config_options: z.array(z.unknown()),
+    effort_default: z.string().nullable().optional(),
+    context_window_default: z.number().int().positive().nullable().optional(),
+    context_window_automatic: z.boolean().optional(),
+    context_window: z.number().int().positive().nullable(),
+    context_window_editable: z.boolean(),
+    context_window_choices: z.array(z.number().int().positive()),
+  }),
+  z.object({
     kind: z.literal("command_menu"),
     system_commands: z.unknown(),
     agent_commands: z.unknown(),

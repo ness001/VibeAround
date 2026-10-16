@@ -55,6 +55,17 @@ impl ThreadProjection {
                 thread.updated_at = occurred_at.clone();
                 Ok(())
             }
+            ThreadEvent::SessionPreferencesChanged {
+                occurred_at,
+                thread_id,
+                preferences,
+                ..
+            } => {
+                let thread = self.thread_mut(thread_id)?;
+                thread.session_preferences = preferences.clone();
+                thread.updated_at = occurred_at.clone();
+                Ok(())
+            }
             ThreadEvent::HostChanged {
                 occurred_at,
                 thread_id,
@@ -211,6 +222,7 @@ impl ThreadProjection {
                 status: ThreadStatus::Open,
                 first_user_prompt: None,
                 agent_sessions: BTreeMap::new(),
+                session_preferences: Default::default(),
                 agents: BTreeMap::new(),
                 multi_agent_turns: BTreeMap::new(),
                 created_at: occurred_at.clone(),

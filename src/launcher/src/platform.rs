@@ -80,6 +80,9 @@ fn build_bash_script(plan: &ExecutionPlan) -> String {
     }
     append_bash_env_defaults(&mut out, terminal_update_suppression_env(), &seen);
     append_bash_color_env(&mut out);
+    for key in common::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+        out.push_str(&format!("unset {key}\n"));
+    }
 
     let workspace = plan.workspace.to_string_lossy();
     let cwd = shell_escape::unix::escape(Cow::Borrowed(workspace.as_ref()));
@@ -565,6 +568,9 @@ mod windows {
         }
         append_powershell_launch_path(&mut out);
         append_powershell_color_env(&mut out);
+        for key in common::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+            out.push_str(&format!("Remove-Item Env:{key} -ErrorAction SilentlyContinue\n"));
+        }
         out.push_str(&format!(
             "Set-Location -LiteralPath {}\n",
             powershell_single_quoted(&plan.workspace.to_string_lossy())
@@ -1148,6 +1154,21 @@ mod windows {
         }
 
         #[test]
+        fn independent_powershell_launch_clears_inherited_claude_markers() {
+            let mut plan = plan("claude", Vec::new());
+            for key in common::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+                plan.env.insert(key.to_string(), "1".to_string());
+            }
+            let script = build_powershell_script(&plan, &plan.command, &plan.args);
+            for key in common::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+                let cleared = script.find(&format!("Remove-Item Env:{key} ")).unwrap();
+                assert!(cleared > script.find(&format!("$env:{key} =")).unwrap());
+                assert!(cleared < script.find("& $vaCommand @vaArgs").unwrap());
+            }
+            assert!(!script.contains("FORCE_SESSION_PERSISTENCE"));
+        }
+
+        #[test]
         fn powershell_script_self_deletes_before_running_command() {
             let plan = plan("claude", Vec::new());
             let script = build_powershell_script(&plan, &plan.command, &plan.args);
@@ -1375,6 +1396,19 @@ mod tests {
 
         assert!(command.contains("open --env 'VA_TEST_ENV=hello world'"));
         assert!(command.ends_with(" -b com.openai.codex"));
+    }
+
+    #[test]
+    fn independent_bash_launch_clears_inherited_claude_markers() {
+        let env = common::process::env::INHERITED_CLAUDE_SESSION_MARKERS.iter()
+            .map(|key| (key.to_string(), "1".to_string())).collect();
+        let script = build_bash_script(&plan(env, "claude", Vec::new()));
+        for key in common::process::env::INHERITED_CLAUDE_SESSION_MARKERS {
+            let cleared = script.find(&format!("unset {key}\n")).unwrap();
+            assert!(cleared > script.find(&format!("export {key}=")).unwrap());
+            assert!(cleared < script.find("exec claude").unwrap());
+        }
+        assert!(!script.contains("FORCE_SESSION_PERSISTENCE"));
     }
 
     #[test]

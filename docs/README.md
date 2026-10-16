@@ -37,6 +37,7 @@ Scenario-oriented pages (also the website's landing content): [remote coding](us
 | [CLI quick start](guides/cli-quick-start.md) | Install the npm CLI, start the daemon, and run the first terminal workflow |
 | [Desktop app](guides/desktop-app.md) | Manage profiles, launches, and services from the GUI |
 | [Web dashboard](guides/web-dashboard.md) | Web terminal, web chat, live preview |
+| [Chat session controls](guides/chat-session-controls.md) | Model, reasoning effort, and new-session compaction budget |
 | [IM usage](guides/im-usage.md) | Drive an agent from chat; full slash-command reference |
 | [Connect channels](guides/connect-channels.md) | Configure Telegram, Slack, Feishu, and the others |
 | [Model profiles](guides/model-profiles.md) | Provider credentials and model routing |
@@ -53,6 +54,7 @@ Scenario-oriented pages (also the website's landing content): [remote coding](us
 |---|---|
 | [Concepts](architecture/concepts.md) | What are workspaces, threads, routes, sessions, agents, and profiles? |
 | [Overview](architecture/overview.md) | The layer diagram, every communication edge, and the module map |
+| [UI and backend stack comparison](architecture/ui-backend-stack-comparison.md) | Alternatives and trade-offs for each layer of the current technology stack |
 | [Session lifecycle](architecture/session-lifecycle.md) | When do threads open and close? What survives a restart? |
 | [Channel plugin system](architecture/channel-plugin-system.md) | How do IM integrations work under the hood? |
 | [Local API and bridge](architecture/local-api-and-bridge.md) | How does the model API bridge translate between providers? |
@@ -66,6 +68,7 @@ Scenario-oriented pages (also the website's landing content): [remote coding](us
 | [CLI](reference/cli.md) | Every `va` command |
 | [API surfaces](reference/api-surfaces.md) | MCP tools, local API routes, WebSocket endpoints, preview URLs |
 | [Timers and limits](reference/timers-and-limits.md) | Every timeout, TTL, interval, and size limit — the single authoritative table |
+| [Phone pairing coverage](reference/phone-pairing-coverage.md) | QR pairing test evidence, WebKit failure and fix, diagnostic lessons, and remaining device checks |
 | [Provider endpoints](reference/provider-endpoints.md) | Per-provider plans, regions, base URLs, models, and credential semantics |
 
 ## Internals

@@ -344,6 +344,29 @@ pub struct WorkspaceItem {
     pub is_builtin: bool,
 }
 
+/// One child directory in the host-side project folder browser.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowseFolderItem {
+    pub name: String,
+    pub path: String,
+}
+
+/// `GET /api/workspaces/browse` response. Navigation never leaves `root`.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowseFoldersResponse {
+    pub root: String,
+    pub path: String,
+    pub parent_path: Option<String>,
+    pub folders: Vec<BrowseFolderItem>,
+}
+
+/// Effective and explicitly configured host-side folder browser root.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceBrowserRootResponse {
+    pub root: String,
+    pub configured_root: Option<String>,
+}
+
 /// `GET /api/workspaces` response.
 ///
 /// `default_workspace` is the workspace root used for new sessions when no
@@ -438,6 +461,20 @@ pub enum ChatEvent {
     },
     SessionMode {
         session_mode: serde_json::Value,
+    },
+    /// Advertised ACP controls and the thread-local auto-compaction budget.
+    /// The budget does not change the model's maximum context size.
+    SessionConfig {
+        config_options: Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
+        #[serde(default)]
+        effort_default: Option<String>,
+        #[serde(default)]
+        context_window_default: Option<u64>,
+        #[serde(default)]
+        context_window_automatic: bool,
+        context_window: Option<u64>,
+        context_window_editable: bool,
+        context_window_choices: Vec<u64>,
     },
     CommandMenu {
         system_commands: serde_json::Value,

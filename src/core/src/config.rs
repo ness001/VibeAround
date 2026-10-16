@@ -882,6 +882,25 @@ pub fn set_default_workspace_path(path: &Path) -> Result<(), String> {
     mutate_settings_json(|root| set_default_workspace_in_settings(root, path))
 }
 
+/// Persist only the folder browser root, preserving concurrent unrelated settings.
+/// Callers validate and canonicalize an explicit path before writing.
+pub fn set_workspace_browser_root(path: Option<&Path>) -> Result<(), String> {
+    mutate_settings_json(|root| set_workspace_browser_root_in_settings(root, path))
+}
+
+fn set_workspace_browser_root_in_settings(
+    root: &mut serde_json::Value,
+    path: Option<&Path>,
+) -> Result<(), String> {
+    let object = root.as_object_mut().ok_or("Settings must be a JSON object")?;
+    if let Some(path) = path {
+        object.insert("workspace_browser_root".into(), serde_json::Value::String(path.to_string_lossy().to_string()));
+    } else {
+        object.remove("workspace_browser_root");
+    }
+    Ok(())
+}
+
 /// Read the raw settings JSON without creating files as a side effect.
 /// A missing file is equivalent to the embedded default settings document.
 pub fn read_settings_json() -> Result<serde_json::Value, String> {
@@ -1993,6 +2012,24 @@ mod tests {
         let grok = config.search_tool.sources.get("grok").expect("grok source");
         assert!(grok.enabled);
         assert_eq!(grok.api_key.as_deref(), Some("xai-key"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workspace_browser_root_persists_without_clobbering_other_settings() {
+        let dir = unique_test_dir("browser-root");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let original = serde_json::json!({"default_workspace":"existing", "workspaces":["keep"], "custom":{"enabled":true}});
+        fs::write(&path, original.to_string()).unwrap();
+        mutate_settings_json_at(&path, |root| set_workspace_browser_root_in_settings(root, Some(&dir))).unwrap();
+        let saved = read_settings_json_at(&path).unwrap();
+        assert_eq!(saved["workspace_browser_root"], dir.to_string_lossy().as_ref());
+        for key in ["default_workspace", "workspaces", "custom"] {
+            assert_eq!(saved[key], original[key]);
+        }
+        mutate_settings_json_at(&path, |root| set_workspace_browser_root_in_settings(root, None)).unwrap();
+        assert_eq!(read_settings_json_at(&path).unwrap(), original);
         fs::remove_dir_all(&dir).unwrap();
     }
 

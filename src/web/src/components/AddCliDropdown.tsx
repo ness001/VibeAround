@@ -17,14 +17,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TOOL_OPTIONS, type ToolType } from "@/lib/terminal-types";
 import { sessionToName } from "@/lib/session-mappers";
+import { CliLaunchDialog } from "./CliLaunchDialog";
 
 interface AddCliDropdownProps {
   /** "top" = inline next to tabs; "empty" = centered in empty state. */
   variant?: "top" | "empty";
   tmuxAvailable: boolean | null;
   tmuxSessions: string[];
-  onAddCli: (tool: ToolType) => void;
-  onAddProfileCli: (profileId: string, launchTarget: string) => void;
+  currentWorkspacePath?: string;
+  onAddCli: (tool: ToolType, projectPath: string) => Promise<void> | void;
+  onAddProfileCli: (profileId: string, launchTarget: string, projectPath: string) => Promise<void> | void;
   onAttachTmux: (sessionName: string) => void;
   onRefreshTmux: () => void;
   trigger?: ReactNode;
@@ -38,6 +40,7 @@ interface AddCliDropdownProps {
  */
 export function AddCliDropdown({
   variant = "top",
+  currentWorkspacePath,
   tmuxAvailable,
   tmuxSessions,
   onAddCli,
@@ -49,6 +52,10 @@ export function AddCliDropdown({
   const { t } = useI18n();
   const [newTmuxName, setNewTmuxName] = useState("");
   const [profiles, setProfiles] = useState<ProfileLaunchOption[]>([]);
+  const [launch, setLaunch] = useState<{
+    label: string;
+    start: (projectPath: string) => Promise<void> | void;
+  } | null>(null);
   const align = variant === "top" ? "start" : "center";
   const profileAgentGroups = groupProfilesByAgent(profiles);
 
@@ -84,6 +91,7 @@ export function AddCliDropdown({
   );
 
   return (
+    <>
     <DropdownMenu
       onOpenChange={(open) => {
         if (!open) return;
@@ -102,7 +110,7 @@ export function AddCliDropdown({
         {TOOL_OPTIONS.map((tool) => (
           <DropdownMenuItem
             key={tool}
-            onSelect={() => onAddCli(tool)}
+            onSelect={() => setLaunch({ label: sessionToName(tool), start: path => onAddCli(tool, path) })}
             className="px-2 py-1.5 text-xs capitalize"
           >
             {sessionToName(tool)}
@@ -124,7 +132,7 @@ export function AddCliDropdown({
                     {group.items.map(({ profile, target }) => (
                       <DropdownMenuItem
                         key={`${profile.id}:${target.id}`}
-                        onSelect={() => onAddProfileCli(profile.id, target.id)}
+                        onSelect={() => setLaunch({ label: `${target.label} / ${profile.label}`, start: path => onAddProfileCli(profile.id, target.id, path) })}
                         className="gap-2 px-2 py-1.5 text-xs"
                       >
                         <span className="min-w-0 flex-1 truncate">{profile.label}</span>
@@ -148,7 +156,7 @@ export function AddCliDropdown({
                   {group.items.map(({ profile, target }) => (
                     <DropdownMenuItem
                       key={`${profile.id}:${target.id}`}
-                      onSelect={() => onAddProfileCli(profile.id, target.id)}
+                      onSelect={() => setLaunch({ label: `${target.label} / ${profile.label}`, start: path => onAddProfileCli(profile.id, target.id, path) })}
                       className="gap-2 px-4 py-1.5 text-xs"
                     >
                       <span className="min-w-0 flex-1 truncate">{profile.label}</span>
@@ -208,6 +216,8 @@ export function AddCliDropdown({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    {launch && <CliLaunchDialog label={launch.label} currentWorkspacePath={currentWorkspacePath} onLaunch={launch.start} onClose={() => setLaunch(null)} />}
+    </>
   );
 }
 

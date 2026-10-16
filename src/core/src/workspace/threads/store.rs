@@ -105,6 +105,36 @@ mod tests {
     }
 
     #[test]
+    fn session_preferences_round_trip_and_legacy_threads_default() {
+        let created = ThreadEvent::created("wt_a", "ws_a", None, HostBinding::new("claude", None));
+        let mut preferences = super::super::session_config::SessionPreferences::default();
+        preferences.context_window = Some(500_000);
+        preferences
+            .config_options
+            .insert("model".into(), "gateway/custom".into());
+        preferences
+            .config_options
+            .insert("effort".into(), "high".into());
+        let event = ThreadEvent::session_preferences_changed("wt_a", preferences.clone());
+        let decoded: ThreadEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let projection = ThreadProjection::from_events(&[created.clone(), decoded]).unwrap();
+        assert_eq!(
+            projection
+                .get(&WorkspaceThreadId::from("wt_a"))
+                .unwrap()
+                .session_preferences,
+            preferences
+        );
+        let legacy = ThreadProjection::from_events(&[created]).unwrap();
+        let mut json =
+            serde_json::to_value(legacy.get(&WorkspaceThreadId::from("wt_a")).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("session_preferences");
+        let thread: WorkspaceThread = serde_json::from_value(json).unwrap();
+        assert_eq!(thread.session_preferences, Default::default());
+    }
+
+    #[test]
     fn projection_tracks_thread_lifecycle() {
         let thread_id = WorkspaceThreadId::from("wt_a");
         let workspace_id = WorkspaceId::from("ws_a");

@@ -270,6 +270,8 @@ pub struct WorkspaceThread {
     pub first_user_prompt: Option<String>,
     pub agent_sessions: BTreeMap<HostBinding, Vec<AgentSessionRef>>,
     #[serde(default)]
+    pub session_preferences: super::super::session_config::SessionPreferences,
+    #[serde(default)]
     pub agents: BTreeMap<ThreadAgentId, ThreadAgent>,
     #[serde(default)]
     pub multi_agent_turns: BTreeMap<MultiAgentTurnId, MultiAgentTurn>,
@@ -308,6 +310,13 @@ pub enum ThreadEvent {
         occurred_at: String,
         thread_id: WorkspaceThreadId,
         prompt: String,
+    },
+    SessionPreferencesChanged {
+        schema_version: u8,
+        event_id: String,
+        occurred_at: String,
+        thread_id: WorkspaceThreadId,
+        preferences: super::super::session_config::SessionPreferences,
     },
     HostChanged {
         schema_version: u8,
@@ -419,6 +428,19 @@ impl ThreadEvent {
             occurred_at: now(),
             thread_id: thread_id.into(),
             prompt: prompt.into(),
+        }
+    }
+
+    pub fn session_preferences_changed(
+        thread_id: impl Into<WorkspaceThreadId>,
+        preferences: super::super::session_config::SessionPreferences,
+    ) -> Self {
+        Self::SessionPreferencesChanged {
+            schema_version: SCHEMA_VERSION,
+            event_id: event_id(),
+            occurred_at: now(),
+            thread_id: thread_id.into(),
+            preferences,
         }
     }
 

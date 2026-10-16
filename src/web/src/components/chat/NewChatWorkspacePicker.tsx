@@ -1,9 +1,14 @@
 "use client";
 
-import { Folder, Loader2 } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Check, Folder, FolderPlus, Loader2, Settings } from "lucide-react";
 import type { WorkspaceItem } from "@va/client";
 import { useI18n } from "@va/i18n";
-
+import { browseFolders, type FolderListing } from "@/api/sessions";
+import { FolderBrowser } from "@/components/FolderBrowser";
+import { FolderRootSettings } from "@/components/FolderRootSettings";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 interface NewChatWorkspacePickerProps {
@@ -14,90 +19,155 @@ interface NewChatWorkspacePickerProps {
   creating?: boolean;
   createError?: string;
   layout?: "full" | "panel";
+  purpose?: "chat" | "cli";
   onWorkspaceChange: (workspacePath: string) => void;
-  onCreateWorkspace?: (name: string) => Promise<void> | void;
+  onCreateWorkspace?: (name: string, parentPath: string) => Promise<boolean>;
+  onAddWorkspace?: (path: string) => Promise<boolean>;
+  onEditingChange?: (editing: boolean) => void;
+  onClearError?: () => void;
   className?: string;
-}
-
-function workspaceLabel(workspace: string) {
-  const normalized = workspace.replace(/[\\/]+$/, "");
-  const parts = normalized.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] ?? workspace;
-}
-
-function SectionTitle({ label }: { label: string }) {
-  return (
-    <div className="px-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">
-      {label}
-    </div>
-  );
 }
 
 export function NewChatWorkspacePicker({
   workspaces,
+  defaultWorkspacePath,
   selectedWorkspacePath,
   loading = false,
+  creating = false,
+  createError,
   layout = "full",
+  purpose = "chat",
   onWorkspaceChange,
+  onCreateWorkspace,
+  onAddWorkspace,
+  onEditingChange,
+  onClearError,
   className,
 }: NewChatWorkspacePickerProps) {
   const { t } = useI18n();
-  const panelLayout = layout === "panel";
+  const id = useId();
+  const [mode, setMode] = useState<"current" | "choose" | "create">("current");
+  const [name, setName] = useState("");
+  const [rootSettingsOpen, setRootSettingsOpen] = useState(false);
+  const [listing, setListing] = useState<FolderListing | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const [browseError, setBrowseError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  const destination = useRef<string | undefined>(undefined);
+  const actionPending = useRef(false);
+  const currentPath = selectedWorkspacePath ?? defaultWorkspacePath;
+  const busy = loading || creating || submitting;
+
+  useEffect(() => () => request.current?.abort(), []);
+
+  async function navigate(path?: string) {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    destination.current = path;
+    setBrowsing(true);
+    setBrowseError(undefined);
+    onClearError?.();
+    try {
+      const result = await browseFolders(path, controller.signal);
+      if (!controller.signal.aborted) setListing(result);
+    } catch (error) {
+      if (!controller.signal.aborted) setBrowseError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (!controller.signal.aborted) setBrowsing(false);
+    }
+  }
+
+  function changeMode(next: typeof mode) {
+    if (busy || rootSettingsOpen) return;
+    onClearError?.();
+    setMode(next);
+    onEditingChange?.(next !== "current");
+    if (next === "current") {
+      request.current?.abort();
+      setBrowsing(false);
+      setBrowseError(undefined);
+    } else if (mode === "current" || !listing) {
+      // Always begin at the server's root, not the last project's subdirectory.
+      setListing(null);
+      void navigate();
+    }
+  }
+
+  async function submit() {
+    if (busy || browsing || browseError || !listing || actionPending.current) return;
+    actionPending.current = true;
+    setSubmitting(true);
+    try {
+      let accepted: boolean | undefined;
+      if (mode === "create") accepted = await onCreateWorkspace?.(name.trim(), listing.path);
+      else if (onAddWorkspace) accepted = await onAddWorkspace(listing.path);
+      else if (workspaces.some(workspace => workspace.path === listing.path)) {
+        onWorkspaceChange(listing.path);
+        accepted = true;
+      }
+      if (accepted) {
+        setMode("current");
+        setName("");
+        onEditingChange?.(false);
+      }
+    } catch (error) {
+      setBrowseError(error instanceof Error ? error.message : String(error));
+    } finally {
+      actionPending.current = false;
+      setSubmitting(false);
+    }
+  }
 
   return (
-    <section className={cn("w-full", !panelLayout && "mx-auto max-w-4xl", className)}>
-      <div className="relative mb-2 flex items-center justify-between gap-3">
-        <SectionTitle label={t("Workspaces")} />
-        {loading && (
-          <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/60">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            {t("Loading")}
-          </div>
-        )}
+    <section aria-label={t("Project folder")} className={cn("w-full rounded-xl border border-border p-3", layout !== "panel" && "mx-auto max-w-4xl", className)}>
+      <div className="mb-2 flex items-center justify-between gap-2 text-sm font-medium">
+        <span>{purpose === "cli" ? t("Where should this CLI run?") : t("Where should this chat work?")}</span>
+        {busy ? <Loader2 aria-label={t("Loading")} className="h-4 w-4 animate-spin text-muted-foreground" /> : <Button type="button" size="icon-sm" variant="ghost" aria-label={t("Configure root folder")} title={t("Configure root folder")} disabled={rootSettingsOpen} onClick={() => {
+          request.current?.abort();
+          setBrowsing(false);
+          setRootSettingsOpen(true);
+          onEditingChange?.(true);
+        }}><Settings className="h-4 w-4" /></Button>}
       </div>
-      {workspaces.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
-          {loading ? t("Loading workspaces...") : t("No projects")}
-        </div>
-      ) : (
-        <div
-          className={cn(
-            "grid grid-cols-1 gap-2",
-            panelLayout
-              ? "max-h-56 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3"
-              : "max-h-44 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3",
-          )}
-        >
-          {workspaces.map((workspace) => {
-            const selected = workspace.path === selectedWorkspacePath;
-            return (
-              <button
-                key={workspace.path}
-                type="button"
-                className={cn(
-                  "flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
-                  selected
-                    ? "bg-primary/10 text-foreground"
-                    : "bg-muted/20 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                )}
-                title={workspace.path}
-                aria-pressed={selected}
-                onClick={() => onWorkspaceChange(workspace.path)}
-              >
-                <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] font-medium leading-4">
-                    {workspaceLabel(workspace.path)}
-                  </span>
-                  <span className="block truncate text-[10px] leading-4 text-muted-foreground/70">
-                    {workspace.path}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+      <div className="flex flex-wrap gap-2" role="group" aria-label={t("Folder options")}>
+        <Button type="button" size="sm" variant={mode === "current" ? "secondary" : "ghost"} aria-pressed={mode === "current"} disabled={busy || rootSettingsOpen} onClick={() => changeMode("current")}>
+          {mode === "current" ? <Check className="h-4 w-4" /> : <Folder className="h-4 w-4" />}{t("Use current folder")}
+        </Button>
+        <Button type="button" size="sm" variant={mode === "choose" ? "secondary" : "ghost"} aria-pressed={mode === "choose"} disabled={busy || rootSettingsOpen} onClick={() => changeMode("choose")}>
+          <Folder className="h-4 w-4" />{t("Choose another folder")}
+        </Button>
+        {onCreateWorkspace && <Button type="button" size="sm" variant={mode === "create" ? "secondary" : "ghost"} aria-pressed={mode === "create"} disabled={busy || rootSettingsOpen} onClick={() => changeMode("create")}>
+          <FolderPlus className="h-4 w-4" />{t("Create a new project folder")}
+        </Button>}
+      </div>
+      {rootSettingsOpen ? <FolderRootSettings onCancel={() => { setRootSettingsOpen(false); onEditingChange?.(mode !== "current"); if (mode !== "current") void navigate(); }} onSaved={() => {
+        setRootSettingsOpen(false);
+        setListing(null);
+        setMode("choose");
+        onEditingChange?.(true);
+        void navigate();
+      }} /> : mode === "current" ? <p className="mt-2 break-all text-xs text-muted-foreground" data-slot="current-project-folder">{currentPath ?? t("Loading current folder…")}</p> : (
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-muted-foreground">{t("Browse folders on the computer running VibeAround.")}</p>
+          <FolderBrowser listing={listing} loading={browsing} error={browseError} disabled={busy} onNavigate={path => void navigate(path)} onRetry={() => void navigate(destination.current)} />
+          <form className="space-y-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
+            {mode === "create" && <div className="space-y-1">
+              <label htmlFor={`${id}-name`} className="text-xs font-medium">{t("New folder name")}</label>
+              <Input id={`${id}-name`} value={name} onChange={event => setName(event.target.value)} placeholder={t("my-project")} required disabled={busy || browsing || Boolean(browseError)} />
+              <p className="text-xs text-muted-foreground">{t("Created inside the folder shown above. Existing folders are never overwritten.")}</p>
+            </div>}
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" size="sm" disabled={busy || browsing || Boolean(browseError) || !listing || (mode === "create" && !name.trim())}>
+                {creating || submitting ? t("Applying…") : mode === "create" ? t("Create and use folder") : t("Use this folder")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" disabled={busy || rootSettingsOpen} onClick={() => changeMode("current")}>{t("Cancel")}</Button>
+            </div>
+          </form>
         </div>
       )}
+      {createError && <p role="alert" className="mt-2 break-words text-xs text-destructive">{createError}</p>}
     </section>
   );
 }

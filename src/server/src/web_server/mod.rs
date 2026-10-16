@@ -391,6 +391,11 @@ pub async fn run_web_server(
             "/api/workspaces",
             get(api::list_workspaces_handler).post(api::add_workspace_handler),
         )
+        .route("/api/workspaces/browse", get(api::browse_workspaces_handler))
+        .route(
+            "/api/workspaces/browser-root",
+            get(api::get_workspace_browser_root_handler).put(api::set_workspace_browser_root_handler),
+        )
         .route(
             "/api/workspaces/create",
             post(api::create_workspace_handler),
@@ -412,6 +417,15 @@ pub async fn run_web_server(
             auth_state.clone(),
             require_auth,
         ));
+
+    let qr_pairing = Router::new()
+        .route("/api/pair/ticket", post(pair::ticket_handler))
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            require_auth,
+        ))
+        .route("/api/pair/redeem", post(pair::redeem_handler))
+        .layer(axum::middleware::from_fn(pair::no_store));
 
     // --- Open routes: SPA shell, static assets, and preview routes. ---------
     //
@@ -565,7 +579,10 @@ pub async fn run_web_server(
 
     // ALL VibeAround routes live under `/va/`; other root paths return to the
     // dashboard instead of acting as a second routing surface.
-    let dashboard = Router::new().merge(protected).merge(public);
+    let dashboard = Router::new()
+        .merge(protected)
+        .merge(qr_pairing)
+        .merge(public);
 
     let app = mount_dashboard(dashboard)
         .with_state(state)

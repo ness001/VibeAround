@@ -142,11 +142,203 @@ fn thread_with_host_session(
         status: ThreadStatus::Open,
         first_user_prompt: None,
         agent_sessions: sessions,
+        session_preferences: Default::default(),
         agents: BTreeMap::new(),
         multi_agent_turns: BTreeMap::new(),
         created_at: "2026-01-01T00:00:00.000Z".to_string(),
         updated_at: "2026-01-01T00:00:00.000Z".to_string(),
     }
+}
+
+#[tokio::test]
+async fn session_config_rejects_busy_without_deferring_or_persisting() {
+    let path = std::env::temp_dir().join(format!(
+        "vibearound-config-busy-{}.jsonl",
+        uuid::Uuid::new_v4()
+    ));
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread_with_host_session("claude", None, "session-a"),
+        PathBuf::from("/tmp/project"),
+        ThreadEventStore::new(&path),
+    ));
+    let (started, ready) = oneshot::channel();
+    let (release, waiting) = oneshot::channel();
+    runtime
+        .owner_tx
+        .send(ThreadOwnerCommand::Probe {
+            started,
+            release: waiting,
+        })
+        .unwrap();
+    ready.await.unwrap();
+    for (id, value) in [("model", "custom"), ("vibearound.context_window", "500000")] {
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            runtime.set_config_option(id.into(), value.into()),
+        )
+        .await
+        .expect("busy mutation must not queue behind prompt");
+        assert!(result.unwrap_err().message.contains("running"));
+    }
+    assert!(!runtime.state().await.context_window_editable);
+    assert!(runtime.store.read_events().await.unwrap().is_empty());
+    release.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn context_budget_persists_only_to_this_new_thread() {
+    let path =
+        std::env::temp_dir().join(format!("vibearound-config-{}.jsonl", uuid::Uuid::new_v4()));
+    let store = ThreadEventStore::new(&path);
+    store
+        .append(&ThreadEvent::created(
+            "wt_a",
+            "ws_a",
+            None,
+            HostBinding::new("claude", None),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(&ThreadEvent::created(
+            "wt_other",
+            "ws_a",
+            None,
+            HostBinding::new("claude", None),
+        ))
+        .await
+        .unwrap();
+    let mut thread = thread_with_host_session("claude", None, "session-a");
+    thread.agent_sessions.clear();
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread,
+        PathBuf::from("/tmp/project"),
+        store.clone(),
+    ));
+    runtime
+        .set_config_option("vibearound.context_window".into(), "500000".into())
+        .await
+        .unwrap();
+    {
+        let state = runtime.turn_state.borrow();
+        let mut metadata = state.metadata.write().unwrap();
+        metadata.context_window_default = Some(180_000);
+        metadata.effort_default = Some("medium".into());
+    }
+    let state = runtime.state().await;
+    assert_eq!(state.context_window, Some(500_000));
+    assert_eq!(state.context_window_default, Some(180_000));
+    assert_eq!(state.effort_default.as_deref(), Some("medium"));
+    assert!(state.session_id.is_none());
+    assert!(state.context_window_editable);
+    let projection = store.load_projection().await.unwrap();
+    assert_eq!(
+        projection
+            .get(&WorkspaceThreadId::from("wt_other"))
+            .unwrap()
+            .session_preferences
+            .context_window,
+        None
+    );
+    assert_eq!(
+        projection
+            .get(&WorkspaceThreadId::from("wt_a"))
+            .unwrap()
+            .session_preferences
+            .context_window,
+        Some(500_000)
+    );
+    runtime
+        .set_config_option("vibearound.context_window".into(), "auto".into())
+        .await
+        .unwrap();
+    assert_eq!(runtime.state().await.context_window, None);
+    assert_eq!(runtime.state().await.context_window_default, Some(180_000));
+    assert_eq!(runtime.state().await.effort_default.as_deref(), Some("medium"));
+    assert!(runtime
+        .set_config_option("effort".into(), "high".into())
+        .await
+        .is_err());
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+#[tokio::test]
+async fn preprompt_controls_require_preparation_and_reject_unknown_options() {
+    let path = std::env::temp_dir().join(format!("vibearound-preprompt-{}.jsonl", uuid::Uuid::new_v4()));
+    let mut thread = thread_with_host_session("claude", None, "unused");
+    thread.agent_sessions.clear();
+    let runtime = Arc::new(ThreadRuntime::new(thread, PathBuf::from("/tmp/project"), ThreadEventStore::new(&path)));
+    // Publish the owner's metadata cache without launching an agent.
+    runtime.set_config_option("vibearound.context_window".into(), "500000".into()).await.unwrap();
+    {
+        let state = runtime.turn_state.borrow();
+        let mut metadata = state.metadata.write().unwrap();
+        metadata.prepared = true;
+        metadata.config_options = serde_json::from_value(serde_json::json!([
+            {"id":"model","name":"Model","type":"select","currentValue":"model-a","options":[{"value":"model-a","name":"A"},{"value":"model-b","name":"B"}]},
+            {"id":"effort","name":"Effort","type":"select","currentValue":"high","options":[{"value":"high","name":"High"},{"value":"low","name":"Low"}]}
+        ])).unwrap();
+    }
+    assert!(runtime.set_config_option("model".into(), "not-advertised".into()).await.is_err());
+    assert!(runtime.set_config_option("effort".into(), "low".into()).await.unwrap_err().message.contains("Prepare"));
+    assert!(runtime.set_config_option("model".into(), "model-b".into()).await.unwrap_err().message.contains("Prepare"));
+    assert!(runtime.set_config_option("mode".into(), "plan".into()).await.unwrap_err().message.contains("after"));
+    let thread = runtime.thread_snapshot();
+    assert!(thread.session_preferences.config_options.is_empty());
+    assert!(thread.agent_sessions.is_empty());
+    assert!(thread.first_user_prompt.is_none());
+    let state = runtime.state().await;
+    assert!(state.session_id.is_none());
+    assert!(state.initialize.is_none());
+    assert!(state.context_window_editable);
+    assert_eq!(state.config_options.len(), 2);
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+#[tokio::test]
+async fn preparing_controls_does_not_start_an_existing_external_session() {
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread_with_host_session("claude", None, "session-a"),
+        PathBuf::from("/tmp/project"),
+        ThreadEventStore::new("/tmp/unused-prepare-controls.jsonl"),
+    ));
+    runtime.prepare_config(RouteKey::new("web", "controls"), Arc::new(NoopClientHandler)).await.unwrap();
+    assert_eq!(runtime.state().await.session_id.as_deref(), Some("session-a"));
+    assert!(runtime.state().await.initialize.is_none());
+}
+
+#[tokio::test]
+async fn context_budget_rejects_existing_sessions_without_changing_them() {
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread_with_host_session("claude", None, "session-a"),
+        PathBuf::from("/tmp/project"),
+        ThreadEventStore::new("/tmp/unused-context-budget.jsonl"),
+    ));
+    assert!(!runtime.state().await.context_window_editable);
+    let error = runtime.set_config_option("vibearound.context_window".into(), "500000".into()).await.unwrap_err();
+    assert!(error.message.contains("new chat"));
+    assert_eq!(runtime.state().await.session_id.as_deref(), Some("session-a"));
+    assert!(runtime.state().await.context_window.is_none());
+}
+
+#[tokio::test]
+async fn session_config_rejects_running_subagents() {
+    let mut thread = thread_with_host_session("claude", None, "session-a");
+    let mut agent = test_thread_agent();
+    agent.status = ThreadAgentStatus::Running;
+    thread.agents.insert(agent.id.clone(), agent);
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread,
+        PathBuf::from("/tmp/project"),
+        ThreadEventStore::new("/tmp/unused.jsonl"),
+    ));
+    assert!(runtime
+        .set_config_option("vibearound.context_window".into(), "500000".into())
+        .await
+        .unwrap_err()
+        .message
+        .contains("subagent"));
+    assert!(!runtime.state().await.context_window_editable);
 }
 
 #[tokio::test]
@@ -482,6 +674,7 @@ fn routes_without_known_session_start_fresh() {
         status: ThreadStatus::Open,
         first_user_prompt: None,
         agent_sessions: BTreeMap::new(),
+        session_preferences: Default::default(),
         agents: BTreeMap::new(),
         multi_agent_turns: BTreeMap::new(),
         created_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -491,6 +684,29 @@ fn routes_without_known_session_start_fresh() {
     let startup_session = host_startup_session(&route, None, &thread, StartupReplay::Replay);
 
     assert_eq!(startup_session, StartupSession::Fresh);
+}
+
+#[tokio::test]
+async fn switching_profile_clears_resolved_session_defaults() {
+    let path = std::env::temp_dir().join(format!("vibearound-defaults-profile-{}.jsonl", uuid::Uuid::new_v4()));
+    let runtime = Arc::new(ThreadRuntime::new(
+        thread_with_host_session("claude", None, "session-a"),
+        PathBuf::from("/tmp/project"),
+        ThreadEventStore::new(&path),
+    ));
+    {
+        let state = runtime.turn_state.borrow();
+        let mut metadata = state.metadata.write().unwrap();
+        metadata.effort_default = Some("high".into());
+        metadata.context_window_default = Some(180_000);
+    }
+    runtime.switch_profile_preserving_session(HostBinding::new("claude", Some("profile-b".into())))
+        .await.unwrap();
+    let state = runtime.state().await;
+    assert_eq!(state.effort_default, None);
+    assert_eq!(state.context_window_default, None);
+    assert_eq!(state.session_id.as_deref(), Some("session-a"));
+    let _ = tokio::fs::remove_file(path).await;
 }
 
 #[tokio::test]

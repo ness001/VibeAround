@@ -41,7 +41,8 @@ pub(in crate::web_server) fn parse_bound_chat_input(
             request_id,
             response,
         }),
-        WebChatInput::SetMode { .. }
+        WebChatInput::GetSessionConfig
+        | WebChatInput::SetMode { .. }
         | WebChatInput::SetConfigOption { .. }
         | WebChatInput::ResumeSession { .. } => None,
     }

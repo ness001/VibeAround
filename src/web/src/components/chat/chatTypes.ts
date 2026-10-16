@@ -93,6 +93,30 @@ export type ChatMeta = {
   profileId?: string;
 };
 
+export type SessionConfigOption = {
+  configId: string;
+  category?: string;
+  name: string;
+  description?: string;
+  currentValue: string;
+  options: SessionModeOption[];
+};
+
+export type SessionConfigState = {
+  configOptions: SessionConfigOption[];
+  contextWindow: number | null;
+  effortDefault?: string | null;
+  contextWindowDefault?: number | null;
+  contextWindowAutomatic?: boolean;
+  contextWindowEditable: boolean;
+  contextWindowChoices: number[];
+};
+
+export type ContextUsage = {
+  used: number;
+  size: number | null;
+};
+
 export type SessionModeOption = {
   value: string;
   name: string;

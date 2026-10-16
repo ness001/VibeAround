@@ -28,6 +28,13 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const NPM_REGISTRY_GLOBAL: &str = "https://registry.npmjs.org";
 const NPM_REGISTRY_CN: &str = "https://registry.npmmirror.com";
 
+/// These mark a Claude tool subprocess, not an independent user-launched session.
+/// Remove them only at terminal/application launch boundaries, never for all children.
+pub const INHERITED_CLAUDE_SESSION_MARKERS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+];
+
 /// Cached full environment from the user's login shell.
 static ENRICHED_ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
 

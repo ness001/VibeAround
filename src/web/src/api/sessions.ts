@@ -2,6 +2,7 @@
  * Sessions API: list, create, delete. Base URL follows current page (works with tunnel).
  */
 
+import { z } from "zod";
 import {
   browserBaseUrl,
   ChatUploadResponseSchema,
@@ -78,11 +79,59 @@ export async function getWorkspaces(): Promise<WorkspacesResponse> {
   return WorkspacesResponseSchema.parse(await res.json());
 }
 
-export async function createWorkspace(name: string): Promise<CreateWorkspaceResponse> {
+export const FolderListingSchema = z.object({
+  root: z.string().min(1),
+  path: z.string().min(1),
+  parent_path: z.string().nullable(),
+  folders: z.array(z.object({ name: z.string().min(1), path: z.string().min(1) })),
+});
+
+export type FolderListing = z.infer<typeof FolderListingSchema>;
+
+export async function browseFolders(path?: string, signal?: AbortSignal): Promise<FolderListing> {
+  const query = path ? `?${new URLSearchParams({ path })}` : "";
+  const response = await fetch(`${browserBaseUrl()}/api/workspaces/browse${query}`, { signal });
+  if (!response.ok) throw new Error(await response.text() || `Unable to browse folders (${response.status})`);
+  return FolderListingSchema.parse(await response.json());
+}
+
+const FolderRootSchema = z.object({ root: z.string().min(1), configured_root: z.string().nullable() });
+
+export async function getFolderRoot() {
+  const response = await fetch(`${browserBaseUrl()}/api/workspaces/browser-root`);
+  if (!response.ok) throw new Error(await response.text() || "Unable to load folder root");
+  return FolderRootSchema.parse(await response.json());
+}
+
+export async function setFolderRoot(path: string | null) {
+  const response = await fetch(`${browserBaseUrl()}/api/workspaces/browser-root`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Unable to save folder root");
+  return FolderRootSchema.parse(await response.json());
+}
+
+export async function addWorkspace(path: string): Promise<string> {
+  const res = await fetch(`${browserBaseUrl()}/api/workspaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await res.text() || `Failed to use folder (${res.status})`);
+  const result: unknown = await res.json();
+  if (!result || typeof result !== "object" || !("added" in result) || typeof result.added !== "string") {
+    throw new Error("The server did not confirm the selected folder.");
+  }
+  return result.added;
+}
+
+export async function createWorkspace(name: string, parentPath?: string): Promise<CreateWorkspaceResponse> {
   const res = await fetch(`${browserBaseUrl()}/api/workspaces/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, parent_path: parentPath }),
   });
   if (!res.ok) {
     const text = await res.text();

@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
+use super::session_config::{SessionMetadata, CONTEXT_WINDOW_CHOICES};
 
 use agent_client_protocol::schema::v1 as acp;
 use anyhow::Context;
@@ -46,6 +48,14 @@ pub struct ThreadRuntimeState {
     pub busy: bool,
     pub failed: Option<String>,
     pub initialize: Option<acp::InitializeResponse>,
+    pub config_options: Vec<acp::SessionConfigOption>,
+    pub session_modes: Option<acp::SessionModeState>,
+    pub effort_default: Option<String>,
+    pub context_window_default: Option<u64>,
+    pub context_window_automatic: bool,
+    pub context_window: Option<u64>,
+    pub context_window_editable: bool,
+    pub context_window_choices: Vec<u64>,
     pub agents: Vec<ThreadAgent>,
     pub multi_agent_turns: Vec<MultiAgentTurn>,
 }
@@ -56,6 +66,9 @@ use owner::*;
 
 #[path = "runtime_subagents.rs"]
 mod subagents;
+
+#[path = "runtime_config.rs"]
+mod config;
 
 #[path = "runtime_events.rs"]
 mod events;
@@ -198,6 +211,7 @@ impl ThreadRuntime {
             failed: None,
             session_id: session_id.clone(),
             host_agent: None,
+            metadata: Arc::new(RwLock::new(SessionMetadata::default())),
             subagents: BTreeMap::new(),
             activity_generation: 0,
             last_activity_at: Instant::now(),
@@ -209,6 +223,8 @@ impl ThreadRuntime {
                 state_tx: turn_state_tx,
                 change_tx: change_tx.clone(),
                 host: None,
+                metadata: Arc::new(RwLock::new(SessionMetadata::default())),
+                prepare_context: None,
                 session_id,
                 thread,
                 subagents: BTreeMap::new(),
@@ -235,7 +251,42 @@ impl ThreadRuntime {
             .as_ref()
             .filter(|agent| agent.is_live())
             .map(|agent| agent.initialize_response());
+        let metadata = turn_state
+            .metadata
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let subagent_active = thread
+            .agents
+            .values()
+            .any(|agent| agent.status == ThreadAgentStatus::Running)
+            || turn_state
+                .subagents
+                .values()
+                .any(|agent| agent.active_turn_target.current().is_some());
+        let context_supported = thread.host_binding.agent_id == "claude";
         ThreadRuntimeState {
+            config_options: metadata.config_options,
+            session_modes: metadata.modes,
+            effort_default: metadata.effort_default,
+            context_window_default: metadata.context_window_default,
+            context_window_automatic: metadata.context_window_automatic,
+            context_window: context_supported
+                .then_some(thread.session_preferences.context_window)
+                .flatten(),
+            context_window_editable: context_supported
+                && turn_state.session_id.is_none()
+                && turn_state.host_agent.is_none()
+                && thread.agent_sessions.is_empty()
+                && thread.first_user_prompt.is_none()
+                && !turn_state.busy
+                && !subagent_active
+                && thread.status == ThreadStatus::Open,
+            context_window_choices: if context_supported {
+                CONTEXT_WINDOW_CHOICES.to_vec()
+            } else {
+                Vec::new()
+            },
             thread_id: thread.id.clone(),
             workspace_id: thread.workspace_id.clone(),
             host_binding: thread.host_binding.clone(),

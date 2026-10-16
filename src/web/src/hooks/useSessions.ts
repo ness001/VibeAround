@@ -27,8 +27,8 @@ interface UseSessionsResult {
   setActiveTabId: (id: string | null) => void;
   maximizedSession: string | null;
   sessionsLoading: boolean;
-  addCli: (tool: ToolType) => Promise<void>;
-  addProfileCli: (profileId: string, launchTarget: string) => Promise<void>;
+  addCli: (tool: ToolType, projectPath: string) => Promise<void>;
+  addProfileCli: (profileId: string, launchTarget: string, projectPath: string) => Promise<void>;
   attachTmux: (sessionName: string) => Promise<void>;
   closeSession: (sessionId: string) => Promise<void>;
   setSessionState: (sessionId: string, tool: ToolType, status: TerminalStatus) => void;
@@ -140,10 +140,10 @@ export function useSessions({ theme, onTmuxAttached }: UseSessionsInput): UseSes
   );
 
   const addCli = useCallback(
-    async (tool: ToolType) => {
+    async (tool: ToolType, projectPath: string) => {
       try {
         const { cols, rows } = estimateTerminalSize();
-        const res = await createSession({ tool, theme, cols, rows });
+        const res = await createSession({ tool, project_path: projectPath, theme, cols, rows });
         const session = sessionListItemToSession({
           session_id: res.session_id,
           tool: res.tool,
@@ -163,18 +163,20 @@ export function useSessions({ theme, onTmuxAttached }: UseSessionsInput): UseSes
         setActiveTabId(session.id);
       } catch (e) {
         console.error("[VibeAround] createSession:", e);
+        throw e;
       }
     },
     [theme],
   );
 
   const addProfileCli = useCallback(
-    async (profileId: string, launchTarget: string) => {
+    async (profileId: string, launchTarget: string, projectPath: string) => {
       try {
         const { cols, rows } = estimateTerminalSize();
         const res = await createSession({
           profile_id: profileId,
           launch_target: launchTarget,
+          project_path: projectPath,
           theme,
           cols,
           rows,
@@ -198,6 +200,7 @@ export function useSessions({ theme, onTmuxAttached }: UseSessionsInput): UseSes
         setActiveTabId(session.id);
       } catch (e) {
         console.error("[VibeAround] create profile session:", e);
+        throw e;
       }
     },
     [theme],

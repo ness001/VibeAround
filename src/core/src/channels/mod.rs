@@ -225,6 +225,32 @@ impl ChannelManager {
         Arc::clone(&self.workspace_thread_manager)
     }
 
+    /// Discover draft controls without sending a prompt or recording a native session.
+    pub async fn prepare_session_controls(&self, route: &crate::routing::RouteKey) -> acp::Result<()> {
+        let manager = &self.workspace_thread_manager;
+        let runtime = match manager.active_route_runtime(route).await
+            .map_err(|error| acp::Error::new(-32603, error.to_string()))? {
+            Some(runtime) => runtime,
+            None if manager.draft_for_route(route).await.is_some() => manager.resolve_route_runtime(route).await
+                .map_err(|error| acp::Error::new(-32603, error.to_string()))?,
+            None => return Ok(()),
+        };
+        let state = runtime.state().await;
+        if state.busy {
+            return Ok(());
+        }
+        let handler = Arc::new(bridge_handler::ChannelBridgeHandler::for_thread_with_capture(
+            Arc::clone(&self.plugin_host),
+            manager,
+            state.workspace_id,
+            state.thread_id,
+            state.host_binding,
+            runtime.active_turn_target(),
+            None,
+        ));
+        runtime.prepare_config(route.clone(), handler).await
+    }
+
     pub fn send_output(&self, output: ChannelOutput) {
         self.plugin_host.send_output(output);
     }

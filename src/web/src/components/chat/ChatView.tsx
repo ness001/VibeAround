@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveLaunchSession,
+  addWorkspace,
   createWorkspace,
   getLaunchSessionsBatch,
   getProfiles,
@@ -120,6 +121,7 @@ export function ChatView({
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | undefined>();
   const [workspacesLoading, setWorkspacesLoading] = useState(false);
   const [workspaceCreating, setWorkspaceCreating] = useState(false);
+  const [workspaceEditing, setWorkspaceEditing] = useState(false);
   const [workspaceCreateError, setWorkspaceCreateError] = useState<string | undefined>();
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionSelections, setSessionSelections] = useState<Record<string, ChatSessionSelection>>(
@@ -342,6 +344,10 @@ export function ChatView({
   );
   const pendingPermissions = activeRuntime.pendingPermissions;
   const sessionMode = activeRuntime.sessionMode;
+  const sessionConfig = activeRuntime.sessionConfig;
+  const pendingConfigId = activeRuntime.pendingConfigId;
+  const queuedModeId = activeRuntime.queuedModeId;
+  const contextUsage = activeRuntime.contextUsage;
   const resumeReplay = activeRuntime.resumeReplay;
   const multiAgentTurns = activeRuntime.multiAgentTurns;
   const subagents = activeRuntime.subagents;
@@ -351,6 +357,7 @@ export function ChatView({
   const sendMessage = activeRuntimeActions?.sendMessage;
   const stopStreaming = activeRuntimeActions?.stopStreaming;
   const setSessionMode = activeRuntimeActions?.setSessionMode;
+  const cancelQueuedMode = activeRuntimeActions?.cancelQueuedMode;
   const setSessionConfigOption = activeRuntimeActions?.setSessionConfigOption;
   const sendPermissionResponse = activeRuntimeActions?.sendPermissionResponse;
   const cancelPermissionRequest = activeRuntimeActions?.cancelPermissionRequest;
@@ -618,6 +625,10 @@ export function ChatView({
     (agentId: string, profileId: string | undefined, workspacePath?: string) => {
       if (messages.length > 0 || sessionSelection.kind !== "new") return;
       delete runtimeThreadInitRef.current[activeRuntimeKey];
+      setRuntimeSnapshots((prev) => ({
+        ...prev,
+        [activeRuntimeKey]: EMPTY_RUNTIME_SNAPSHOT,
+      }));
       setRuntimeSpecs((prev) => {
         const current = prev[activeRuntimeKey];
         if (!current || current.launchSession) return prev;
@@ -1277,18 +1288,39 @@ export function ChatView({
     void syncLaunchSessions({ force: true });
   }, [syncLaunchSessions]);
 
-  const handleCreateWorkspace = useCallback(async (name: string) => {
+  const handleCreateWorkspace = useCallback(async (name: string, parentPath: string) => {
     setWorkspaceCreating(true);
     setWorkspaceCreateError(undefined);
     try {
-      const response = await createWorkspace(name);
+      const response = await createWorkspace(name, parentPath);
       setWorkspaces(response.workspaces);
       setDefaultWorkspacePath(response.default_workspace);
       setSelectedWorkspacePath(response.workspace.path);
       updateActiveDraftRuntime(selectedAgent, selectedProfileId, response.workspace.path);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setWorkspaceCreateError(message);
+      return false;
+    } finally {
+      setWorkspaceCreating(false);
+    }
+  }, [selectedAgent, selectedProfileId, updateActiveDraftRuntime]);
+
+  const handleAddWorkspace = useCallback(async (path: string) => {
+    setWorkspaceCreating(true);
+    setWorkspaceCreateError(undefined);
+    try {
+      const added = await addWorkspace(path);
+      setWorkspaces(previous => previous.some(workspace => workspace.path === added) ? previous : [
+        ...previous, { path: added, is_default: false, is_builtin: false },
+      ]);
+      setSelectedWorkspacePath(added);
+      updateActiveDraftRuntime(selectedAgent, selectedProfileId, added);
+      return true;
+    } catch (error) {
+      setWorkspaceCreateError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setWorkspaceCreating(false);
     }
@@ -1300,6 +1332,8 @@ export function ChatView({
         session?.agent_id ??
         (sidebarAgentFilter === ALL_AGENTS_FILTER ? selectedAgent : sidebarAgentFilter);
       if (selection.kind === "new") {
+        setWorkspaceEditing(false);
+        setWorkspaceCreateError(undefined);
         clearStoredActiveLaunchSession();
         storedActiveLaunchSessionKeyRef.current = undefined;
         setSessionSelections((prev) => ({ ...prev, [targetAgentId]: selection }));
@@ -1496,6 +1530,7 @@ export function ChatView({
       setInput("");
       return;
     }
+    if (workspaceCreating || (activeSessionSelection.kind === "new" && workspaceEditing)) return;
     if (attachmentsUploading) return;
     if (replayBlocksInput) return;
     if (!sendMessage) return;
@@ -1563,6 +1598,8 @@ export function ChatView({
     selectedWorkspace?.path,
     sendMessage,
     sessionSelection,
+    workspaceCreating,
+    workspaceEditing,
     t,
   ]);
 
@@ -1570,19 +1607,20 @@ export function ChatView({
     activeAgentInfo,
     activeProfileId,
   );
+  const sessionControls = {
+    config: sessionConfig,
+    usage: contextUsage,
+    pendingConfigId,
+    sessionStarted: Boolean(meta.sessionId || activeLaunchSession),
+    disabled: replayBlocksInput || subagents.some((agent) => agent.status === "running"),
+    onChange: setSessionConfigOption,
+  };
 
   const handleSessionModeChange = useCallback(
     (value: string) => {
-      if (!sessionMode) return;
-      if (sessionMode.source === "config_option") {
-        if (sessionMode.configId) {
-          setSessionConfigOption?.(sessionMode.configId, value);
-        }
-        return;
-      }
       setSessionMode?.(value);
     },
-    [sessionMode, setSessionConfigOption, setSessionMode],
+    [setSessionMode],
   );
 
   if (handoffError) {
@@ -1690,12 +1728,28 @@ export function ChatView({
           showSessionSidebar={showSessionSidebar}
           onShowMobileSessions={() => setMobileSessionSidebarOpen(true)}
           onToggleSessionSidebar={() => setShowSessionSidebar((value) => !value)}
+          onNewChat={() => handleMobileSessionChange({ kind: "new" })}
           onOpenAppSidebar={onOpenAppSidebar}
         />
 
         {showNewChatHome ? (
           <NewChatHome>
             <div className="space-y-4">
+              <NewChatWorkspacePicker
+                key={activeRuntimeKey}
+                workspaces={workspaces}
+                defaultWorkspacePath={defaultWorkspacePath}
+                selectedWorkspacePath={selectedWorkspace?.path}
+                loading={workspacesLoading}
+                creating={workspaceCreating}
+                createError={workspaceCreateError}
+                onWorkspaceChange={handleWorkspaceSelectionChange}
+                onCreateWorkspace={handleCreateWorkspace}
+                onAddWorkspace={handleAddWorkspace}
+                onEditingChange={setWorkspaceEditing}
+                onClearError={() => setWorkspaceCreateError(undefined)}
+                layout="panel"
+              />
               <ChatInput
                 value={input}
                 onChange={setInput}
@@ -1712,12 +1766,17 @@ export function ChatView({
                   streaming ||
                   replayBlocksInput ||
                   attachmentsUploading ||
+                  workspaceCreating || workspaceEditing ||
                   !activeLaunchSelectionValid
                 }
                 isStreaming={streaming}
                 sendWithModifierEnter={webSettings.send_with_modifier_enter}
                 sessionMode={sessionMode}
+                sessionControls={sessionControls}
                 onSessionModeChange={handleSessionModeChange}
+                queuedModeId={queuedModeId}
+                onCancelQueuedMode={cancelQueuedMode}
+                sessionModeDisabledReason={replayBlocksInput ? t("Loading session history; mode changes will be available shortly.") : undefined}
                 placeholder={
                   connected ? t("Ask {{agent}} anything…", { agent: agentLabel }) : t("Connecting…")
                 }
@@ -1733,18 +1792,6 @@ export function ChatView({
                   selectedProfileId={selectedProfileId}
                   fallbackAgentLabel={selectedAgentLabel}
                   onLaunchChange={handleLaunchChange}
-                  className="min-w-0"
-                />
-                <NewChatWorkspacePicker
-                  workspaces={workspaces}
-                  defaultWorkspacePath={defaultWorkspacePath}
-                  selectedWorkspacePath={selectedWorkspace?.path}
-                  loading={workspacesLoading}
-                  creating={workspaceCreating}
-                  createError={workspaceCreateError}
-                  onWorkspaceChange={handleWorkspaceSelectionChange}
-                  onCreateWorkspace={handleCreateWorkspace}
-                  layout="panel"
                   className="min-w-0"
                 />
               </div>
@@ -1791,7 +1838,11 @@ export function ChatView({
               isStreaming={streaming}
               sendWithModifierEnter={webSettings.send_with_modifier_enter}
               sessionMode={sessionMode}
+              sessionControls={sessionControls}
               onSessionModeChange={handleSessionModeChange}
+              queuedModeId={queuedModeId}
+              onCancelQueuedMode={cancelQueuedMode}
+              sessionModeDisabledReason={replayBlocksInput ? t("Loading session history; mode changes will be available shortly.") : undefined}
               placeholder={
                 connected ? t("Message {{agent}}…", { agent: agentLabel }) : t("Connecting…")
               }

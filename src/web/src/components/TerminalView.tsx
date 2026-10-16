@@ -58,7 +58,7 @@ export function TerminalView({ session, isActive, viewMode, onSessionState, onSe
     if (!fitTargetRef.current || initializedRef.current) return;
     initializedRef.current = true;
 
-    // Simple mobile detection: disable stdin on touch devices to avoid virtual keyboard / focus issues
+    // Use mobile sizing without disabling the terminal protocol or keyboard input.
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
     const { Terminal } = await import("@xterm/xterm");
@@ -78,7 +78,8 @@ export function TerminalView({ session, isActive, viewMode, onSessionState, onSe
       scrollback: session.tmuxSession ? 0 : 5000,
       convertEol: session.tmuxSession ? false : true,
       allowProposedApi: true,
-      disableStdin: isMobile,
+      // Disabling stdin also drops DSR/device replies and stalls Windows ConPTY startup.
+      disableStdin: false,
     });
 
     term.loadAddon(fitAddon);

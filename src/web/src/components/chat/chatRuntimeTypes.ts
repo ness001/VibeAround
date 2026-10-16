@@ -7,7 +7,9 @@ import type {
 import type {
   ChatMessage,
   ChatMeta,
+  ContextUsage,
   PendingPermission,
+  SessionConfigState,
   SessionModeState,
 } from "./chatTypes";
 import type {
@@ -39,6 +41,10 @@ export interface ChatRuntimeSnapshot {
   agents: AgentInfo[];
   pendingPermissions: PendingPermission[];
   sessionMode: SessionModeState | null;
+  queuedModeId: string | null;
+  sessionConfig: SessionConfigState | null;
+  pendingConfigId: string | null;
+  contextUsage: ContextUsage | null;
   resumeReplay: ResumeReplayState | null;
   multiAgentTurns: MultiAgentTurn[];
   subagents: ThreadAgent[];
@@ -51,6 +57,7 @@ export interface ChatRuntimeActions {
   resumeSession: ReturnType<typeof useWebChatConnection>["resumeSession"];
   clearConversationView: ReturnType<typeof useWebChatConnection>["clearConversationView"];
   setSessionMode: ReturnType<typeof useWebChatConnection>["setSessionMode"];
+  cancelQueuedMode: ReturnType<typeof useWebChatConnection>["cancelQueuedMode"];
   setSessionConfigOption: ReturnType<typeof useWebChatConnection>["setSessionConfigOption"];
   stopStreaming: ReturnType<typeof useWebChatConnection>["stopStreaming"];
   sendPermissionResponse: ReturnType<typeof useWebChatConnection>["sendPermissionResponse"];
@@ -65,6 +72,10 @@ export const EMPTY_RUNTIME_SNAPSHOT: ChatRuntimeSnapshot = {
   agents: [],
   pendingPermissions: [],
   sessionMode: null,
+  queuedModeId: null,
+  sessionConfig: null,
+  pendingConfigId: null,
+  contextUsage: null,
   resumeReplay: null,
   multiAgentTurns: [],
   subagents: [],

@@ -83,6 +83,7 @@ import {
   updateRemoteChannelForm,
   writeImChannelOrder,
 } from "./remote-dashboard/settings";
+import { PhonePairing } from "./remote-dashboard/PhonePairing";
 import {
   DIRECT_PROFILE,
   FOLLOW_DEFAULT,
@@ -497,6 +498,7 @@ export function RemoteDashboard({
           </aside>
 
           <main className="min-h-0 overflow-y-auto px-6 py-5 [scrollbar-gutter:stable]">
+            <PhonePairing tunnels={tunnels.tunnels} />
             {loadingSettings ? (
               <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />

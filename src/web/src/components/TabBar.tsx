@@ -13,8 +13,8 @@ interface TabBarProps {
   onClose: (sessionId: string) => void;
   tmuxAvailable: boolean | null;
   tmuxSessions: string[];
-  onAddCli: (tool: ToolType) => void;
-  onAddProfileCli: (profileId: string, launchTarget: string) => void;
+  onAddCli: (tool: ToolType, projectPath: string) => Promise<void> | void;
+  onAddProfileCli: (profileId: string, launchTarget: string, projectPath: string) => Promise<void> | void;
   onAttachTmux: (name: string) => void;
   onRefreshTmux: () => void;
 }
@@ -118,6 +118,7 @@ export function TabBar({
       <div className="relative flex shrink-0 items-center overflow-visible border-l border-border/50 px-1">
         <AddCliDropdown
           variant="top"
+          currentWorkspacePath={groups.flatMap(group => group.sessions).find(session => session.id === activeTabId)?.cwd}
           tmuxAvailable={tmuxAvailable}
           tmuxSessions={tmuxSessions}
           onAddCli={onAddCli}

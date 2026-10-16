@@ -1,11 +1,12 @@
-import type { SessionModeOption, SessionModeState } from "./chatTypes";
+import type { SessionModeState } from "./chatTypes";
+import { parseSelectOptions } from "./chatSessionConfig";
 
 export function parseSessionModeState(value: unknown): SessionModeState | null {
   if (!isRecord(value)) return null;
   const source = value.source;
   if (source !== "config_option" && source !== "session_mode") return null;
   const currentValue = stringValue(value.currentValue);
-  const options = parseModeOptions(value.options);
+  const options = parseSelectOptions(value.options);
   if (!currentValue || options.length === 0) return null;
   return {
     source,
@@ -27,7 +28,7 @@ export function parseModeFromConfigOptions(
   });
   if (!isRecord(option) || option.type !== "select") return null;
   const currentValue = stringValue(option.currentValue);
-  const options = parseModeOptions(option.options);
+  const options = parseSelectOptions(option.options);
   if (!currentValue || options.length === 0) return null;
   return {
     source: "config_option",
@@ -37,31 +38,6 @@ export function parseModeFromConfigOptions(
     currentValue,
     options,
   };
-}
-
-function parseModeOptions(value: unknown): SessionModeOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    if (Array.isArray(item.options)) {
-      const group = stringValue(item.name);
-      return parseModeOptions(item.options).map((option) => ({
-        ...option,
-        group: option.group ?? group,
-      }));
-    }
-    const optionValue = stringValue(item.value);
-    const name = stringValue(item.name);
-    if (!optionValue || !name) return [];
-    return [
-      {
-        value: optionValue,
-        name,
-        description: stringValue(item.description),
-        group: stringValue(item.group),
-      },
-    ];
-  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -35,6 +35,10 @@ impl WorkspaceThreadManager {
         self.runtime_for_thread(thread_id).await
     }
 
+    pub async fn draft_for_route(&self, route: &RouteKey) -> Option<WorkspaceThread> {
+        self.drafts.lock().await.get(route).cloned()
+    }
+
     pub async fn active_route_runtime(
         &self,
         route: &RouteKey,

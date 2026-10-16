@@ -44,7 +44,8 @@ pub use sessions::{
 };
 pub use settings::{get_settings_handler, patch_settings_handler, put_settings_handler};
 pub use workspaces::{
-    add_workspace_handler, create_workspace_handler, list_workspaces_handler,
+    add_workspace_handler, browse_workspaces_handler, create_workspace_handler, list_workspaces_handler,
+    get_workspace_browser_root_handler, set_workspace_browser_root_handler,
     remove_workspace_handler, reorder_workspaces_handler, set_default_workspace_handler,
 };
 

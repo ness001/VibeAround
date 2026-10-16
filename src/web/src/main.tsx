@@ -5,18 +5,24 @@ import App from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { PairingGate } from "./PairingGate";
 import { initTheme } from "./lib/theme";
-import { clearAuthToken, getAuthToken, initAuthFromUrl } from "./lib/auth";
+import { clearAuthToken, getAuthToken, initAuthFromUrl, setAuthToken } from "./lib/auth";
+import { initPairingAuth } from "./lib/qrPairing";
 import { ownerPreviewSlug } from "./preview/previewRoute";
 import "./index.css";
+
+// Capture and strip QR credentials before theme, auth, fetch, or rendering.
+// A QR invitation must not auto-login using an old cached or query token.
+const qrPairing = initPairingAuth(window, {
+  clearAuthToken,
+  initAuthFromUrl,
+  setAuthToken,
+  fetch: (input, init) => window.fetch(input, init),
+  redirect: (destination) => window.location.replace(destination),
+});
 
 const PreviewPage = lazy(() => import("./preview/PreviewPage"));
 
 initTheme();
-
-// Pull ?token=... out of the URL on first load, stash it in sessionStorage,
-// and strip the query string so it never ends up in history or Referer.
-// Must run before any fetch or WebSocket is issued.
-initAuthFromUrl();
 
 // The fetch wrapper sets `vibearound.auth.reloading` before force-reloading
 // the page on a 401, to prevent a reload loop when the daemon is actually
@@ -80,7 +86,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <I18nProvider>
       <AppErrorBoundary>
-        {previewSlug ? (
+        {qrPairing ? (
+          <PairingGate qrPairing={qrPairing} />
+        ) : previewSlug ? (
           <Suspense
             fallback={
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

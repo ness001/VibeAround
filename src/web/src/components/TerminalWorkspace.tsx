@@ -19,8 +19,8 @@ interface TerminalWorkspaceProps {
   viewMode: ViewMode;
   tmuxAvailable: boolean | null;
   tmuxSessions: string[];
-  onAddCli: (tool: ToolType) => void;
-  onAddProfileCli: (profileId: string, launchTarget: string) => void;
+  onAddCli: (tool: ToolType, projectPath: string) => Promise<void> | void;
+  onAddProfileCli: (profileId: string, launchTarget: string, projectPath: string) => Promise<void> | void;
   onAttachTmux: (name: string) => void;
   onRefreshTmux: () => void;
   onToggleMaximize: (sessionId: string) => void;

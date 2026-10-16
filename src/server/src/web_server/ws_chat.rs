@@ -195,14 +195,39 @@ async fn handle_chat_socket(
         return;
     }
 
+    if let Some(event) = session_config_snapshot(&state, &active_route).await {
+        if send_event(&mut ws_tx, &event).await.is_err() {
+            state
+                .web_channel
+                .unregister_connection(&active_route, &connection_id)
+                .await;
+            return;
+        }
+    }
+
     // Outbound: drain ChannelOutput → ChatEvent → websocket.
+    let outbound_state = state.clone();
     let outbound_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 Some(output) = rx.recv() => {
+                    let route = output.route_key().clone();
                     let event = output_to_chat_event(output);
+                    let refresh_config = match &event {
+                        ChatEvent::SessionReady { .. } | ChatEvent::TurnStatus { .. } | ChatEvent::SubagentStatus { .. } => true,
+                        ChatEvent::AcpNotification { payload } => matches!(payload.pointer("/update/sessionUpdate").and_then(|value| value.as_str()), Some("config_option_update" | "current_mode_update")),
+                        _ => false,
+                    };
                     if send_event(&mut ws_tx, &event).await.is_err() {
                         break;
+                    }
+                    if refresh_config {
+                        if let Some(config) = session_config_snapshot(&outbound_state, &route).await {
+                            if send_event(&mut ws_tx, &config).await.is_err() { break; }
+                        }
+                        if let Some(mode) = session_mode_snapshot(&outbound_state, &route).await {
+                            if send_event(&mut ws_tx, &mode).await.is_err() { break; }
+                        }
                     }
                 }
                 Some(event) = event_rx.recv() => {
@@ -325,7 +350,13 @@ async fn handle_chat_socket(
                                     }
                                 }
                                 if let Some(mode_id) = session_mode {
-                                    apply_web_session_mode(&state, &route, &mode_id).await;
+                                    if let Err(error) =
+                                        apply_web_session_mode(&state, &route, &mode_id).await
+                                    {
+                                        dispatch_input = false;
+                                        let _ = event_tx.send(ChatEvent::Error { error });
+                                    }
+                                    send_session_config_snapshot(&state, &route, &event_tx).await;
                                 }
                                 remember_web_user_message(
                                     &state,
@@ -339,17 +370,34 @@ async fn handle_chat_socket(
                                 enqueue_channel_input(&state.channel_hub, input);
                             }
                         }
+                        WebChatInput::GetSessionConfig => {
+                            if !state.web_channel.route_is_active(&active_route).await {
+                                if let Err(error) = state.channel_hub.prepare_session_controls(&active_route).await {
+                                    let _ = event_tx.send(ChatEvent::Error { error: error.message.to_string() });
+                                }
+                            }
+                            send_session_config_snapshot(&state, &active_route, &event_tx).await;
+                        }
                         WebChatInput::SetMode { mode_id } => {
-                            apply_web_session_mode(&state, &active_route, &mode_id).await;
+                            if let Err(error) =
+                                apply_web_session_mode(&state, &active_route, &mode_id).await
+                            {
+                                let _ = event_tx.send(ChatEvent::Error { error });
+                            }
+                            send_session_config_snapshot(&state, &active_route, &event_tx).await;
                         }
                         WebChatInput::SetConfigOption { config_id, value } => {
-                            apply_web_session_config_option(
+                            if let Err(error) = apply_web_session_config_option(
                                 &state,
                                 &active_route,
                                 config_id,
                                 value,
                             )
-                            .await;
+                            .await
+                            {
+                                let _ = event_tx.send(ChatEvent::Error { error });
+                            }
+                            send_session_config_snapshot(&state, &active_route, &event_tx).await;
                         }
                         WebChatInput::Cancel(input) => {
                             abort_direct_resume_task(
@@ -472,6 +520,24 @@ async fn handle_chat_socket(
                             }));
                         }
                     }
+                } else if serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind.as_str(),
+                            "set_config_option" | "set_mode" | "get_session_config"
+                        )
+                    })
+                {
+                    let _ = event_tx.send(ChatEvent::Error {
+                        error: "Invalid session configuration request.".to_string(),
+                    });
                 }
             }
             Message::Close(_) => break,
@@ -1213,27 +1279,105 @@ fn canonical_web_session_mode(mode_id: &str) -> Option<&'static str> {
     }
 }
 
-async fn apply_web_session_mode(state: &AppState, route: &RouteKey, mode_id: &str) {
-    let Some(canonical) = canonical_web_session_mode(mode_id) else {
-        send_web_system_text(
-            state,
-            route,
-            &format!(
-                "❌ Unknown mode `{}`. Valid: default, plan, acceptEdits, bypassPermissions, dontAsk.",
-                mode_id
-            ),
-        )
-        ;
-        return;
+async fn session_config_snapshot(state: &AppState, route: &RouteKey) -> Option<ChatEvent> {
+    let manager = state.channel_hub.workspace_thread_manager();
+    let runtime = manager.active_route_runtime(route).await.ok()?;
+    let Some(runtime) = runtime else {
+        let draft = manager.draft_for_route(route).await?;
+        let supported = draft.host_binding.agent_id == "claude";
+        return Some(ChatEvent::SessionConfig {
+            config_options: Vec::new(),
+            effort_default: None,
+            context_window_default: None,
+            context_window_automatic: false,
+            context_window: draft.session_preferences.context_window,
+            context_window_editable: supported,
+            context_window_choices: if supported { vec![100_000, 200_000, 500_000, 1_000_000] } else { Vec::new() },
+        });
     };
-    send_web_system_text(
-        state,
-        route,
-        &format!(
-            "Session mode `{}` is no longer a route-level setting; switch host/profile instead.",
-            canonical
-        ),
-    );
+    let current = runtime.state().await;
+    Some(ChatEvent::SessionConfig {
+        config_options: current.config_options,
+        effort_default: current.effort_default,
+        context_window_default: current.context_window_default,
+        context_window_automatic: current.context_window_automatic,
+        context_window: current.context_window,
+        context_window_editable: current.context_window_editable
+            && !state.web_channel.route_is_active(route).await,
+        context_window_choices: current.context_window_choices,
+    })
+}
+
+async fn session_mode_snapshot(state: &AppState, route: &RouteKey) -> Option<ChatEvent> {
+    let runtime = state
+        .channel_hub
+        .workspace_thread_manager()
+        .active_route_runtime(route)
+        .await
+        .ok()??;
+    let current = runtime.state().await;
+    let modes = current.session_modes?;
+    if current.config_options.iter().any(|option| {
+        option.id.0.as_ref() == "mode"
+            || option.category
+                == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Mode)
+    }) {
+        return None;
+    }
+    Some(ChatEvent::SessionMode {
+        session_mode: serde_json::json!({
+            "source": "session_mode",
+            "name": "Mode",
+            "currentValue": modes.current_mode_id,
+            "options": modes.available_modes.iter().map(|mode| serde_json::json!({"value": mode.id, "name": mode.name, "description": mode.description})).collect::<Vec<_>>(),
+        }),
+    })
+}
+
+async fn send_session_config_snapshot(
+    state: &AppState,
+    route: &RouteKey,
+    sink: &tokio::sync::mpsc::UnboundedSender<ChatEvent>,
+) {
+    let event = session_config_snapshot(state, route)
+        .await
+        .unwrap_or(ChatEvent::SessionConfig {
+            config_options: Vec::new(),
+            effort_default: None,
+            context_window_default: None,
+            context_window_automatic: false,
+            context_window: None,
+            context_window_editable: false,
+            context_window_choices: Vec::new(),
+        });
+    let _ = sink.send(event);
+    if let Some(event) = session_mode_snapshot(state, route).await {
+        let _ = sink.send(event);
+    }
+}
+
+async fn apply_web_session_mode(
+    state: &AppState,
+    route: &RouteKey,
+    mode_id: &str,
+) -> Result<(), String> {
+    if state.web_channel.route_is_active(route).await {
+        return Err("Session settings cannot change while a prompt is running.".to_string());
+    }
+    let runtime = state
+        .channel_hub
+        .workspace_thread_manager()
+        .active_route_runtime(route)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            "No session is ready. Send a message or resume a session first.".to_string()
+        })?;
+    let canonical = canonical_web_session_mode(mode_id).unwrap_or(mode_id);
+    runtime
+        .set_session_mode(canonical.to_string())
+        .await
+        .map_err(|error| error.message.to_string())
 }
 
 async fn apply_web_session_config_option(
@@ -1241,16 +1385,24 @@ async fn apply_web_session_config_option(
     route: &RouteKey,
     config_id: String,
     value: String,
-) {
-    send_web_system_text(
-        state,
-        route,
-        &format!(
-            "Session config `{}` is no longer a route-level setting; requested value `{}` was ignored.",
-            config_id, value
-        ),
-    )
-    ;
+) -> Result<(), String> {
+    if state.web_channel.route_is_active(route).await {
+        return Err("Session settings cannot change while a prompt is running.".to_string());
+    }
+    let manager = state.channel_hub.workspace_thread_manager();
+    let runtime = match manager.active_route_runtime(route).await.map_err(|error| error.to_string())? {
+        Some(runtime) => runtime,
+        None if config_id == "vibearound.context_window" && manager.draft_for_route(route).await.is_some() => {
+            manager.resolve_route_runtime(route).await.map_err(|error| error.to_string())?
+        }
+        None => return Err("No session is ready. Send a message or resume a session first.".to_string()),
+    };
+    runtime
+        .set_config_option(config_id, value)
+        .await
+        .map_err(|error| error.message.to_string())?;
+    state.channel_hub.prepare_session_controls(route).await
+        .map_err(|error| error.message.to_string())
 }
 
 pub(super) async fn send_event<S>(ws_tx: &mut S, event: &ChatEvent) -> Result<(), ()>
@@ -1341,6 +1493,69 @@ mod tests {
         assert!(!super::route_still_listening(&tui, false));
         // Nobody has a Feishu window open; the plugin is listening regardless.
         assert!(super::route_still_listening(&feishu, false));
+    }
+
+    #[test]
+    fn session_config_wire_preserves_acp_options_and_nullable_budget() {
+        let option = serde_json::from_value(serde_json::json!({
+            "id": "model", "name": "Model", "type": "select", "currentValue": "gateway/custom",
+            "options": [{"value": "gateway/custom", "name": "Custom"}]
+        }))
+        .unwrap();
+        let json = serde_json::to_value(ChatEvent::SessionConfig {
+            config_options: vec![option],
+            effort_default: Some("high".into()),
+            context_window_default: Some(180_000),
+            context_window_automatic: false,
+            context_window: None,
+            context_window_editable: true,
+            context_window_choices: vec![100_000, 200_000, 500_000, 1_000_000],
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "session_config");
+        assert_eq!(json["config_options"][0]["currentValue"], "gateway/custom");
+        assert!(json["context_window"].is_null());
+        assert_eq!(json["effort_default"], "high");
+        assert_eq!(json["context_window_default"], 180_000);
+        assert_eq!(json["context_window_automatic"], false);
+        assert_eq!(json["context_window_editable"], true);
+        assert_eq!(json["context_window_choices"][3], 1_000_000);
+    }
+
+    #[test]
+    fn session_config_wire_keeps_unreported_defaults_null() {
+        let json = serde_json::to_value(ChatEvent::SessionConfig {
+            config_options: Vec::new(),
+            effort_default: None,
+            context_window_default: None,
+            context_window_automatic: false,
+            context_window: Some(500_000),
+            context_window_editable: false,
+            context_window_choices: Vec::new(),
+        }).unwrap();
+        assert!(json["effort_default"].is_null());
+        assert!(json["context_window_default"].is_null());
+        assert_eq!(json["context_window"], 500_000);
+    }
+
+    #[test]
+    fn session_config_requests_support_reconnect_and_numeric_context_budget() {
+        let route = RouteKey::new("web", "config-test");
+        assert!(matches!(
+            parse_web_chat_input(&route, "web-user", r#"{"type":"get_session_config"}"#),
+            Some(WebChatInput::GetSessionConfig)
+        ));
+        match parse_web_chat_input(
+            &route,
+            "web-user",
+            r#"{"type":"set_config_option","configId":"vibearound.context_window","value":500000}"#,
+        ) {
+            Some(WebChatInput::SetConfigOption { config_id, value }) => {
+                assert_eq!(config_id, "vibearound.context_window");
+                assert_eq!(value, "500000");
+            }
+            _ => panic!("expected config setter"),
+        }
     }
 
     #[test]

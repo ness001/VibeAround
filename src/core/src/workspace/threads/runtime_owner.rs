@@ -8,6 +8,7 @@ pub(super) struct TurnState {
     pub(super) failed: Option<String>,
     pub(super) session_id: Option<String>,
     pub(super) host_agent: Option<Arc<Agent>>,
+    pub(super) metadata: Arc<RwLock<SessionMetadata>>,
     pub(super) subagents: BTreeMap<ThreadAgentId, SubagentRuntime>,
     pub(super) activity_generation: u64,
     pub(super) last_activity_at: Instant,
@@ -67,6 +68,23 @@ pub(super) enum ThreadOwnerCommand {
         reply: oneshot::Sender<bool>,
     },
     SwitchProfile(Box<SwitchProfileCommand>),
+    PrepareConfig {
+        runtime: Arc<ThreadRuntime>,
+        route: RouteKey,
+        handler: Arc<dyn AgentClientHandler>,
+        reply: oneshot::Sender<acp::Result<()>>,
+    },
+    SetConfig {
+        runtime: Arc<ThreadRuntime>,
+        config_id: String,
+        value: String,
+        reply: oneshot::Sender<acp::Result<()>>,
+    },
+    SetMode {
+        runtime: Arc<ThreadRuntime>,
+        mode_id: String,
+        reply: oneshot::Sender<acp::Result<()>>,
+    },
     PromptFinished {
         result: Box<acp::Result<acp::PromptResponse>>,
         reply: oneshot::Sender<acp::Result<acp::PromptResponse>>,
@@ -94,6 +112,8 @@ pub(super) struct ThreadOwner {
     pub(super) state_tx: watch::Sender<TurnState>,
     pub(super) change_tx: Option<broadcast::Sender<()>>,
     pub(super) host: Option<AcpSessionRunner>,
+    pub(super) metadata: Arc<RwLock<SessionMetadata>>,
+    pub(super) prepare_context: Option<(RouteKey, Arc<dyn AgentClientHandler>)>,
     pub(super) session_id: Option<String>,
     pub(super) thread: WorkspaceThread,
     pub(super) subagents: BTreeMap<ThreadAgentId, SubagentRuntime>,
@@ -184,6 +204,31 @@ impl ThreadOwner {
                     let result = self
                         .switch_host(&runtime, host_binding, preserve_session)
                         .await;
+                    let _ = reply.send(result);
+                }
+                ThreadOwnerCommand::PrepareConfig { runtime, route, handler, reply } => {
+                    let result = if prompt_active { Ok(()) } else {
+                        self.prepare_controls(&runtime, &route, handler).await
+                    };
+                    let _ = reply.send(result);
+                }
+                ThreadOwnerCommand::SetConfig {
+                    runtime,
+                    config_id,
+                    value,
+                    reply,
+                } => {
+                    let result = self
+                        .change_config(&runtime, &config_id, &value, prompt_active)
+                        .await;
+                    let _ = reply.send(result);
+                }
+                ThreadOwnerCommand::SetMode {
+                    runtime,
+                    mode_id,
+                    reply,
+                } => {
+                    let result = self.change_mode(&runtime, &mode_id, prompt_active).await;
                     let _ = reply.send(result);
                 }
                 ThreadOwnerCommand::PromptFinished { result, reply } => {
@@ -392,6 +437,55 @@ impl ThreadOwner {
         let _ = reply.send(result);
     }
 
+    pub(super) async fn prepare_controls(
+        &mut self,
+        runtime: &ThreadRuntime,
+        route: &RouteKey,
+        handler: Arc<dyn AgentClientHandler>,
+    ) -> acp::Result<()> {
+        if self.thread.host_binding.agent_id != "claude"
+            || !self.config_is_pristine()
+            || self.metadata.read().unwrap_or_else(|error| error.into_inner()).prepared
+        {
+            return Ok(());
+        }
+        self.check_config_idle(false)?;
+        self.prepare_context = Some((route.clone(), Arc::clone(&handler)));
+        let handler: Arc<dyn AgentClientHandler> = Arc::new(super::config::ProbeHandler { inner: handler });
+        let previous_metadata = self.metadata.read().unwrap_or_else(|error| error.into_inner()).clone();
+        let result = tokio::time::timeout(Duration::from_secs(35), async {
+            let Some((agent, _)) = self.ensure_agent(runtime, route, handler, None, StartupReplay::Silent).await? else {
+                return Err(runtime_stopped_error());
+            };
+            // This session is a disposable capability probe, never a conversation.
+            // Do not observe its id or restore settings through model validation.
+            let response = tokio::time::timeout(Duration::from_secs(30), agent.new_session(acp::NewSessionRequest::new(runtime.workspace.clone())))
+                .await.map_err(|_| acp::Error::new(-32603, "Session controls request timed out."))??;
+            let session_id = response.session_id.to_string();
+            {
+                let mut metadata = self.metadata.write().unwrap_or_else(|error| error.into_inner());
+                metadata.set_fresh_config(response.config_options.unwrap_or_default());
+                metadata.modes = response.modes;
+            }
+            // Native effort changes do not perform model validation or inference.
+            if let Some(effort) = self.thread.session_preferences.config_options.get("effort").cloned() {
+                self.apply_config(&agent, &session_id, "effort", &effort).await?;
+            }
+            self.metadata.write().unwrap_or_else(|error| error.into_inner()).prepared = true;
+            Ok(())
+        }).await.unwrap_or_else(|_| Err(acp::Error::new(-32603, "Preparing session controls timed out. Retry before sending a message.")));
+        self.shutdown_host_generation(runtime).await;
+        // Detach the cache from late notifications emitted during probe shutdown.
+        let metadata = if result.is_ok() {
+            self.metadata.read().unwrap_or_else(|error| error.into_inner()).clone()
+        } else {
+            previous_metadata
+        };
+        self.metadata = Arc::new(RwLock::new(metadata));
+        self.publish_runtime_state();
+        result
+    }
+
     async fn start(
         &mut self,
         runtime: &ThreadRuntime,
@@ -459,7 +553,7 @@ impl ThreadOwner {
         self.shutdown_agent_processes(runtime).await;
     }
 
-    async fn shutdown_host_generation(&mut self, runtime: &ThreadRuntime) {
+    pub(super) async fn shutdown_host_generation(&mut self, runtime: &ThreadRuntime) {
         if let Some(host) = self.host.take() {
             host.shutdown().await;
             self.publish_runtime_state();
@@ -511,6 +605,7 @@ impl ThreadOwner {
             return Ok(());
         }
 
+        let host_changed = self.thread.host_binding.agent_id != host_binding.agent_id;
         let preserved_session_id = preserve_session.then(|| self.session_id.clone()).flatten();
         if let Some(host) = self.host.take() {
             host.shutdown().await;
@@ -520,6 +615,16 @@ impl ThreadOwner {
         let thread_id = self.thread.id.clone();
         let event = ThreadEvent::host_changed(thread_id.clone(), host_binding.clone());
         self.persist_thread_event(runtime, &event).await?;
+        self.metadata = Arc::new(RwLock::new(SessionMetadata::default()));
+        let mut preferences = self.thread.session_preferences.clone();
+        preferences.config_options.clear();
+        if host_changed {
+            preferences.context_window = None;
+        }
+        self.persist_thread_event(
+            runtime,
+            &ThreadEvent::session_preferences_changed(thread_id.clone(), preferences),
+        ).await?;
 
         if let Some(session_id) = preserved_session_id {
             let needs_session_ref = !self.thread.has_agent_session(&host_binding, &session_id);
@@ -645,6 +750,32 @@ impl ThreadOwner {
             &agent_id,
         ));
 
+        let inherited_env = crate::process::env::enriched_env();
+        let inherited_context = inherited_env.iter().find(|(key, _)| {
+            if cfg!(windows) {
+                key.eq_ignore_ascii_case("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+            } else {
+                key.as_str() == "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+            }
+        }).map(|(_, value)| value.as_str());
+        let context_window_default = super::super::session_config::context_window_default(
+            &agent_id, &env_vars, inherited_context,
+        );
+        let local_defaults = if agent_id == "claude" {
+            super::super::session_config::resolve_claude_defaults(&runtime.workspace, &env_vars).await
+        } else { None };
+        self.context_env(&mut env_vars, &agent_id);
+        // A generation-local cache prevents late notifications from a stopped
+        // process from overwriting the new host's advertised capabilities.
+        self.metadata = Arc::new(RwLock::new(SessionMetadata {
+            context_window_default,
+            ..SessionMetadata::default()
+        }));
+        self.metadata.write().unwrap_or_else(|error| error.into_inner()).set_local_defaults(local_defaults);
+        let handler: Arc<dyn AgentClientHandler> = Arc::new(super::config::ConfigTrackingHandler {
+            inner: handler,
+            metadata: Arc::clone(&self.metadata),
+        });
         let spawned_handler = Arc::clone(&handler);
         let ready = Agent::spawn_cancellable(
             agent_id.clone(),
@@ -662,6 +793,14 @@ impl ThreadOwner {
             return Ok(None);
         };
 
+        {
+            let mut metadata = self
+                .metadata
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            metadata.update_config(ready.startup_config_options.unwrap_or_default());
+            metadata.modes = ready.startup_modes;
+        }
         self.host = Some(AcpSessionRunner {
             agent: Arc::clone(&ready.agent),
             client_handler: spawned_handler,
@@ -678,6 +817,10 @@ impl ThreadOwner {
                 &session_id,
             )
             .await?;
+            if let Err(error) = self.restore_config(&ready.agent, &session_id).await {
+                self.shutdown_host_generation(runtime).await;
+                return Err(error);
+            }
         } else if startup_session.session_id().is_some() {
             self.session_id = None;
             self.publish_runtime_state();
@@ -710,9 +853,21 @@ impl ThreadOwner {
             None => request.await?,
         };
         let session_id = response.session_id.to_string();
+        {
+            let mut metadata = self
+                .metadata
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            metadata.set_fresh_config(response.config_options.unwrap_or_default());
+            metadata.modes = response.modes;
+        }
         let host = self.thread.host_binding.clone();
         self.observe_session(runtime, &host.agent_id, host.profile_id, &session_id)
             .await?;
+        if let Err(error) = self.restore_config(agent, &session_id).await {
+            self.shutdown_host_generation(runtime).await;
+            return Err(error);
+        }
         Ok(Some(session_id))
     }
 
@@ -761,7 +916,7 @@ impl ThreadOwner {
         self.persist_thread_event(runtime, &event).await
     }
 
-    async fn persist_thread_event(
+    pub(super) async fn persist_thread_event(
         &mut self,
         runtime: &ThreadRuntime,
         event: &ThreadEvent,
@@ -801,11 +956,12 @@ impl ThreadOwner {
         self.state_tx.send_replace(state);
     }
 
-    fn publish_runtime_state(&self) {
+    pub(super) fn publish_runtime_state(&self) {
         let mut state = self.state_tx.borrow().clone();
         state.thread = self.thread.clone();
         state.session_id = self.session_id.clone();
         state.host_agent = self.host.as_ref().map(|host| Arc::clone(&host.agent));
+        state.metadata = Arc::clone(&self.metadata);
         state.subagents = self.subagents.clone();
         state.activity_generation = self.activity_generation;
         state.last_activity_at = self.last_activity_at;

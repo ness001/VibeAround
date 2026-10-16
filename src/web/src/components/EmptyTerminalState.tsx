@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 interface EmptyTerminalStateProps {
   tmuxAvailable: boolean | null;
   tmuxSessions: string[];
-  onAddCli: (tool: ToolType) => void;
-  onAddProfileCli: (profileId: string, launchTarget: string) => void;
+  onAddCli: (tool: ToolType, projectPath: string) => Promise<void> | void;
+  onAddProfileCli: (profileId: string, launchTarget: string, projectPath: string) => Promise<void> | void;
   onAttachTmux: (name: string) => void;
   onRefreshTmux: () => void;
 }

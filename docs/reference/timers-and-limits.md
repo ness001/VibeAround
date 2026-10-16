@@ -9,6 +9,7 @@ Every timeout, TTL, interval, and size limit in one table. **This page is the si
 | 10 minutes | Minimum idle age before a resident warm thread is eligible for pressure eviction; this is not a timer | `src/core/src/workspace/manager.rs` (`WARM_THREAD_MIN_IDLE`) |
 | 120 seconds | Handover pickup code TTL (4-character code, one-shot) | `src/core/src/workspace/handover.rs` |
 | 60 seconds | Browser pairing code TTL (6-digit code, refreshable) | `src/core/src/auth/pair.rs` (`CODE_TTL`) |
+| 60 seconds | QR pairing ticket TTL (single use; independent of tunnel or authenticated browser lifetime) | `src/core/src/auth/qr.rs` |
 | 600 seconds | Server or Markdown Preview **share transaction** lifetime: URL ID, reusable access code, and browser grant expire together; owner access follows the preview session | `src/core/src/previews/store.rs` (`SHARE_TTL_SECS`) |
 | per daemon start | Dashboard auth token rotation — every restart invalidates all previous URLs | `src/core/src/auth/token.rs` |
 
@@ -30,6 +31,8 @@ Every timeout, TTL, interval, and size limit in one table. **This page is the si
 | 64 | Channel input shard workers — same route strictly ordered, routes parallel | `src/server/src/lib.rs` (`CHANNEL_INPUT_WORKER_COUNT`) |
 | 4 chars / 32-char alphabet | Handover code format | `src/core/src/workspace/handover.rs` |
 | 6 digits | Pairing code format | `src/core/src/auth/pair.rs` |
+| 64 | Maximum pending QR pairing tickets | `src/core/src/auth/qr.rs` |
+| 256 bits / 64 hex characters | QR pairing ticket entropy and format | `src/core/src/auth/qr.rs`, `src/core/src/auth/token.rs` |
 
 ## Network defaults
 
@@ -46,6 +49,6 @@ No timeout exists on permission requests by design — an agent turn waits for t
 ---
 
 *Source anchors: the "Defined in" column above — each row names its constant.*
-*Last verified: v0.7.11*
+*Existing limits reference: v0.7.11. QR ticket entries checked against local source changes on 2026-09-18; native ticket-store and pairing-endpoint tests passed on Windows.*
 
 <sub>[◀ API surfaces reference](api-surfaces.md) · [Documentation index](../README.md) · [Provider endpoints reference ▶](provider-endpoints.md)</sub>

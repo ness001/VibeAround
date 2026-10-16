@@ -17,6 +17,7 @@ pub(super) enum WebChatInput {
         session_workspace: Option<String>,
         session_mode: Option<String>,
     },
+    GetSessionConfig,
     SetMode {
         mode_id: String,
     },
@@ -102,13 +103,23 @@ pub(super) fn parse_web_chat_input(
                         session_mode,
                     })
                 }
+                "get_session_config" => Some(WebChatInput::GetSessionConfig),
                 "set_mode" => {
                     let mode_id = string_field(&v, &["modeId", "mode_id", "permissionMode"])?;
                     Some(WebChatInput::SetMode { mode_id })
                 }
                 "set_config_option" => {
                     let config_id = string_field(&v, &["configId", "config_id"])?;
-                    let value = string_field(&v, &["value"])?;
+                    let value = string_field(&v, &["value"]).or_else(|| {
+                        (config_id
+                            == common::workspace::threads::session_config::CONTEXT_WINDOW_CONFIG_ID)
+                            .then(|| {
+                                v.get("value")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map(|value| value.to_string())
+                            })
+                            .flatten()
+                    })?;
                     Some(WebChatInput::SetConfigOption { config_id, value })
                 }
                 "resume_session" => {

@@ -31,6 +31,14 @@ Local hostnames (`localhost`, `127.0.0.1`, `::1`, and the desktop app's own orig
 
 Browser pairing requests are accepted only from the local dashboard, desktop development origin, or an active tunnel origin. Native clients without an `Origin` header remain supported; an unrelated website cannot start and poll a pairing transaction to read the daemon token.
 
+### QR scan pairing
+
+Desktop's **Connect phone** card can issue an independent, high-entropy, single-use pairing ticket. Issuance requires the owner bearer credential and a genuinely local request: tunnel-forwarded traffic cannot mint tickets. The target public hostname is bound to the ticket along with the current owner-token generation.
+
+The QR contains `https://<host>/va/#pair=<ticket>`, not an owner token. URL fragments are not sent in the initial HTTP request. The browser strips the fragment before rendering and redeems it once through a JSON POST. Tickets expire after the [configured short lifetime](../reference/timers-and-limits.md#lifecycles-and-ttls); redemption atomically consumes them, so a replay or second concurrent scan cannot authenticate. Existing origin checks, token-protected APIs, and WebSockets remain in effect. Responses containing tickets or credentials use `Cache-Control: no-store`.
+
+Possession of a valid QR is authorization to pair: do not share images, screenshots, or ticket links. Successful redemption still gives the browser the existing shared owner credential; this feature does not add per-device permissions or revocation. QR expiry only limits enrollment and does not expire an authenticated session.
+
 ## Zone 3: IM platforms
 
 IM messages arrive through channel plugins. The platform never gets a shell; it gets a conversation:
@@ -75,6 +83,6 @@ Honest limits of the model:
 ---
 
 *Source anchors: `src/server/src/web_server/auth.rs` (token middleware, local-origin rules), `src/core/src/auth/` (token file, pairing TTL), `src/core/src/previews/store.rs` (SHARE_TTL_SECS), `src/core/src/routing.rs` (attachment key validation), `src/server/src/web_server/mod.rs` (route protection layout).*
-*Last verified: v0.7.11*
+*Existing security reference: v0.7.11. QR pairing source changes verified on 2026-09-18 with native tests and live public API/browser checks for authentication and replay rejection. Physical iPhone/Safari scanning remains a user check.*
 
 <sub>[◀ Local API and bridge](local-api-and-bridge.md) · [Documentation index](../README.md) · [Configuration reference ▶](../reference/configuration.md)</sub>
