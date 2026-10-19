@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use common::process::registry::{ChildRegistry, ProcessKind};
 use serde::Serialize;
+use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
@@ -115,6 +116,7 @@ fn resolve_program(name: &str, env: &std::collections::HashMap<String, String>) 
 fn cloudflared_program(
     requested: Option<String>,
     env: &std::collections::HashMap<String, String>,
+    bundled: &Path,
 ) -> Result<PathBuf, String> {
     let configured = requested
         .filter(|path| !path.trim().is_empty())
@@ -132,13 +134,17 @@ fn cloudflared_program(
         }
         return Ok(path);
     }
+    // App resources are preferred over user-managed tools and PATH.
+    if bundled.is_file() {
+        return Ok(bundled.to_path_buf());
+    }
     let managed =
         common::plugins::user_plugin_dependency_bin_path("tunnel-cloudflare", "cloudflared");
     if managed.is_file() {
         return Ok(managed);
     }
     resolve_program("cloudflared", env).ok_or_else(|| {
-        "cloudflared is not installed. Install it with VibeAround setup or select its executable.".into()
+        "The bundled cloudflared client is missing. Repair or reinstall VibeAround, or select an executable in Advanced.".into()
     })
 }
 
@@ -167,6 +173,7 @@ pub async fn quick_tunnel_status(
 
 #[tauri::command]
 pub async fn quick_tunnel_start(
+    app: tauri::AppHandle,
     state: tauri::State<'_, QuickTunnelState>,
     controller: tauri::State<'_, crate::DaemonController>,
     cloudflared_path: Option<String>,
@@ -180,7 +187,14 @@ pub async fn quick_tunnel_start(
     }
     let env = common::process::env::child_env();
     let resolved = (|| {
-        let cloudflared = cloudflared_program(cloudflared_path, &env)?;
+        let executable = if cfg!(windows) { "cloudflared.exe" } else { "cloudflared" };
+        let bundled = if cfg!(debug_assertions) {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/cloudflared").join(executable)
+        } else {
+            app.path().resource_dir().map_err(|_| "Cannot locate VibeAround resources".to_string())?
+                .join("binaries/cloudflared").join(executable)
+        };
+        let cloudflared = cloudflared_program(cloudflared_path, &env, &bundled)?;
         let node = resolve_program("node", &env).ok_or_else(|| {
             "Node.js is required for the restricted Quick Tunnel gateway.".to_string()
         })?;
@@ -293,4 +307,20 @@ pub async fn quick_tunnel_stop(
     state: tauri::State<'_, QuickTunnelState>,
 ) -> Result<QuickTunnelStatus, String> {
     Ok(state.stop().await)
+}
+
+#[cfg(test)]
+mod bundled_tests {
+    use super::*;
+    #[test]
+    fn bundled_client_works_without_path_and_explicit_invalid_override_fails() {
+        let dir = std::env::temp_dir().join(format!("va-bundled-cloudflare-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("cloudflared.exe");
+        std::fs::write(&binary, b"fixture").unwrap();
+        let env = std::collections::HashMap::new();
+        assert_eq!(cloudflared_program(None, &env, &binary).unwrap(), binary);
+        assert!(cloudflared_program(Some("relative.exe".into()), &env, &binary).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -4,6 +4,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { prepareCloudflared } from "./prepare-cloudflared.mjs";
+
 const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const profile = valueFor("--profile") ?? "debug";
@@ -25,6 +27,7 @@ const targetExtension = targetTriple.includes("windows") ? ".exe" : "";
 const hostExtension = process.platform === "win32" ? ".exe" : "";
 
 if (args.includes("--desktop")) {
+  await prepareCloudflared(targetTriple);
   for (const sidecar of desktopSidecars) {
     prepareDesktopSidecar(sidecar, targetTriple, targetExtension);
   }
