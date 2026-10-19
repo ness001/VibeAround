@@ -12,7 +12,8 @@ log_redact_keys = ["token", "api_key", "secret", "password"]
 label = "Global"
 node_index = "https://nodejs.org/dist/index.json"
 node_dist = "https://nodejs.org/dist"
-npm_registry = "https://registry.npmjs.org"
+# Empty means inherit npm configuration on this machine.
+npm_registry = ""
 
 [sources.cn]
 label = "China mirror"

@@ -11,6 +11,24 @@ Build any part of VibeAround — the standalone server, the CLI tools, or the fu
 
 All build commands below run from `src/` in the repository.
 
+## npm registry configuration
+
+The default (`global`) download source uses npm's own registry and authentication
+configuration, including the user's `.npmrc` and scoped feeds. Keep private feed
+URLs and credentials outside this repository. Selecting the China mirror is an
+explicit override; `STARTKIT_NPM_REGISTRY` or `VIBEAROUND_NPM_REGISTRY` can also
+set an explicit process-level override. Do not disable TLS verification.
+
+Before starting a chat process, VibeAround checks the adapter's pinned version and
+executable. Missing adapters are installed on demand. Managed installations are
+serialized within the daemon and checked again after waiting, so concurrent chats
+reuse a successful installation. Chat status shows waiting/installing/ready phases
+and elapsed time without exposing raw npm output. Cancel stops an in-progress
+npm installation; an installation also times out after ten minutes. Failures give
+registry, authentication, certificate, or package-availability checks and can be
+retried after correcting local configuration. Separate daemon processes do not
+share the in-process installation lock.
+
 ## Standalone server + dashboard
 
 ```bash

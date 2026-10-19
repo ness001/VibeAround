@@ -56,6 +56,9 @@ pub trait AgentClientHandler: Send + Sync + 'static {
         args: schema::RequestPermissionRequest,
     ) -> acp::Result<schema::RequestPermissionResponse>;
 
+    /// Safe installation status, before the ACP session exists.
+    async fn startup_status(&self, _message: &str) {}
+
     async fn prompt_finished(&self, _success: bool) -> acp::Result<()> {
         Ok(())
     }
@@ -318,14 +321,30 @@ impl Agent {
         let cwd = workspace.to_path_buf();
         let label = format!("{}:{}", agent_id, route);
 
+        let cancel_install = cancellation.as_ref().map(|rx| (**rx).clone());
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let resolve = resolve_agent_program(&agent_id, &status_tx, cancel_install.as_ref());
+        tokio::pin!(resolve);
+        let (program, mut resolved_args, selected_candidate) = loop {
+            tokio::select! {
+                result = &mut resolve => {
+                    while let Ok(message) = status_rx.try_recv() {
+                        client_handler.startup_status(&message).await;
+                    }
+                    if cancel_install.as_ref().is_some_and(|rx| *rx.borrow()) {
+                        return Ok(None);
+                    }
+                    break result?;
+                }
+                Some(message) = status_rx.recv() => client_handler.startup_status(&message).await,
+            }
+        };
+
         super::sync_project_skills(&agent_id, workspace)
             .with_context(|| format!("sync project skills for {}", agent_id))?;
         super::install_project_mcp(&agent_id, workspace)
             .with_context(|| format!("install project MCP for {}", agent_id))?;
 
-        // Resolve program + args + install if needed.
-        let (program, mut resolved_args, selected_candidate) =
-            resolve_agent_program(&agent_id).await?;
         resolved_args.extend(extra_args);
         tracing::info!(
             "[{}] spawning {} {} in {:?}",
@@ -661,6 +680,8 @@ impl Agent {
 /// they can launch the same CLI selected by VibeAround.
 async fn resolve_agent_program(
     agent_id: &str,
+    status: &tokio::sync::mpsc::UnboundedSender<String>,
+    cancellation: Option<&watch::Receiver<bool>>,
 ) -> anyhow::Result<(
     String,
     Vec<String>,
@@ -689,8 +710,9 @@ async fn resolve_agent_program(
             .npm_package
             .as_deref()
             .ok_or_else(|| anyhow!("built-in agent '{}' declares no npm package", agent_id))?;
-        let entry =
-            resolve_npm_acp_entry(agent_id, npm_pkg, agent_def.acp.bin_name.as_deref()).await?;
+        let entry = resolve_npm_acp_entry(
+            agent_id, npm_pkg, agent_def.acp.bin_name.as_deref(), status, cancellation,
+        ).await?;
         return Ok(("node".to_string(), vec![entry], None));
     }
     let config = crate::config::ensure_loaded();
@@ -707,8 +729,9 @@ async fn resolve_agent_program(
     // 2. binary-download agents → install via install_cmd, run from PATH
     // 3. native agents → program + args from PATH
     if let Some(npm_pkg) = &agent_def.acp.npm_package {
-        let entry =
-            resolve_npm_acp_entry(agent_id, npm_pkg, agent_def.acp.bin_name.as_deref()).await?;
+        let entry = resolve_npm_acp_entry(
+            agent_id, npm_pkg, agent_def.acp.bin_name.as_deref(), status, cancellation,
+        ).await?;
         Ok(("node".to_string(), vec![entry], selected_candidate))
     } else if let Some(install_cmd) = &agent_def.acp.install_cmd {
         if let Some(candidate) = selected_candidate.as_ref() {
@@ -749,12 +772,20 @@ async fn resolve_npm_acp_entry(
     agent_id: &str,
     npm_package: &str,
     bin_name: Option<&str>,
+    status: &tokio::sync::mpsc::UnboundedSender<String>,
+    cancellation: Option<&watch::Receiver<bool>>,
 ) -> anyhow::Result<String> {
     let default_bin_name = super::install::npm_package_bin_name(npm_package);
     let bin_name = bin_name.unwrap_or(&default_bin_name);
     if !super::install::npm_package_installed(npm_package, bin_name) {
         tracing::info!("[{}-agent] auto-installing {} ...", agent_id, npm_package);
-        super::install::auto_install_npm_agent(npm_package).await?;
+        super::install::auto_install_npm_agent_with_progress_and_cancel(
+            npm_package,
+            |message| {
+                let _ = status.send(message);
+            },
+            || cancellation.is_some_and(|rx| *rx.borrow()),
+        ).await?;
     }
     let entry = crate::process::env::resolve_acp_agent_bin(bin_name)
         .with_context(|| format!("Resolving ACP agent '{}' (npm: {})", agent_id, npm_package))?;

@@ -9,6 +9,47 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::resources;
 
+// npm mutates a shared package.json/lockfile/node_modules tree. Serialize managed
+// installs, then recheck readiness after acquiring the lock (not before only).
+static MANAGED_INSTALL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn lock_managed_install(
+    is_cancelled: &impl Fn() -> bool,
+) -> anyhow::Result<tokio::sync::MutexGuard<'static, ()>> {
+    let acquire = MANAGED_INSTALL.lock();
+    tokio::pin!(acquire);
+    loop {
+        anyhow::ensure!(!is_cancelled(), "Adapter installation cancelled.");
+        tokio::select! {
+            guard = &mut acquire => return Ok(guard),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    }
+}
+
+fn package_bin_name(package: &str) -> Option<String> {
+    resources::agent_ids()
+        .into_iter()
+        .filter_map(resources::agent_by_id)
+        .find(|agent| agent.acp.npm_package.as_deref() == Some(package))
+        .map(|agent| agent.acp.bin_name.clone().unwrap_or_else(|| npm_package_bin_name(package)))
+}
+
+fn install_failure(package: &str, stderr: &str) -> String {
+    // npm diagnostics can contain registry URLs and credentials; send only a
+    // classified action to clients, never the raw stderr.
+    let hint = if stderr.contains("E401") || stderr.contains("E403") {
+        "Check npm feed permissions and renew authentication in your user npm configuration."
+    } else if stderr.contains("CERT") || stderr.contains("SSL") || stderr.contains("TLS") {
+        "Check your npm registry and trusted certificates. Keep TLS verification enabled."
+    } else if stderr.contains("E404") || stderr.contains("ETARGET") {
+        "Check that the configured feed provides the requested package version."
+    } else {
+        "Check npm connectivity and user configuration; inspect the local npm log for details."
+    };
+    format!("Adapter installation failed for {package}. {hint} Retry after correcting the configuration.")
+}
+
 /// Output captured from an install command.
 pub struct InstallOutput {
     pub stdout: String,
@@ -145,6 +186,20 @@ where
     F: FnMut(String),
     C: Fn() -> bool,
 {
+    on_log("Waiting for adapter installation slot...".to_string());
+    let _guard = lock_managed_install(&is_cancelled).await?;
+    anyhow::ensure!(!is_cancelled(), "Adapter installation cancelled.");
+    let bin_name = package_bin_name(npm_package);
+    if bin_name.as_deref().is_some_and(|bin| {
+        npm_package_installed_in_dir(npm_package, bin, package_dir)
+    }) {
+        on_log("Adapter already installed; reusing it.".to_string());
+        return Ok(InstallOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+    on_log(format!("Installing adapter {npm_package} using npm configuration..."));
     ensure_managed_node_for_npm(&mut on_log, &is_cancelled).await?;
     std::fs::create_dir_all(package_dir).with_context(|| format!("creating {:?}", package_dir))?;
 
@@ -162,14 +217,23 @@ where
         is_cancelled,
     )
     .await
-    .with_context(|| format!("running npm install {}", npm_package))?;
+    .map_err(|error| match error.kind() {
+        std::io::ErrorKind::Interrupted => anyhow::anyhow!("Adapter installation cancelled."),
+        std::io::ErrorKind::TimedOut => anyhow::anyhow!("Adapter installation timed out. Check npm connectivity and retry."),
+        _ => anyhow::anyhow!("Cannot run npm to install {npm_package}. Check Node.js and npm availability, then retry."),
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        anyhow::bail!("npm install {} failed: {}", npm_package, stderr.trim());
+        anyhow::bail!(install_failure(npm_package, &stderr));
     }
+    if let Some(bin) = bin_name.as_deref() {
+        anyhow::ensure!(npm_package_installed_in_dir(npm_package, bin, package_dir),
+            "npm completed but adapter {npm_package} is not ready. Check the installed version and executable, then retry.");
+    }
+    on_log("Adapter ready.".to_string());
     tracing::info!(
         "[agent] installed {} in {}",
         npm_package,
@@ -208,7 +272,7 @@ where
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        anyhow::bail!("npm install -g {} failed: {}", target, stderr.trim());
+        anyhow::bail!(install_failure(&target, &stderr));
     }
     let bin_dir = npm_global_bin_dir(&cwd).await?;
     crate::process::env::ensure_user_path_dir(&bin_dir)
@@ -301,9 +365,21 @@ where
     let mut stdout_buf = String::new();
     let mut stderr_buf = String::new();
     let mut cancel_tick = tokio::time::interval(std::time::Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    let mut last_progress = started;
+    let mut streams_closed = false;
     let status = loop {
         tokio::select! {
             _ = cancel_tick.tick() => {
+                if started.elapsed() > std::time::Duration::from_secs(600) {
+                    let _ = child.terminate_tree().await;
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut,
+                        "Adapter installation timed out. Check npm connectivity and retry."));
+                }
+                if last_progress.elapsed() >= std::time::Duration::from_secs(5) {
+                    on_log(format!("Installing adapter... {} seconds elapsed", started.elapsed().as_secs()));
+                    last_progress = std::time::Instant::now();
+                }
                 if is_cancelled() {
                     let _ = child.terminate_tree().await;
                     return Err(std::io::Error::new(
@@ -315,7 +391,7 @@ where
                     break status;
                 }
             }
-            maybe = rx.recv() => {
+            maybe = rx.recv(), if !streams_closed => {
                 if let Some((stream, line)) = maybe {
                     if stream == "stdout" {
                         stdout_buf.push_str(&line);
@@ -324,7 +400,9 @@ where
                         stderr_buf.push_str(&line);
                         stderr_buf.push('\n');
                     }
-                    on_log(format!("{stream}: {line}"));
+                    // Raw npm output is captured, not streamed to remote clients.
+                } else {
+                    streams_closed = true;
                 }
             }
         }
@@ -338,7 +416,7 @@ where
             stderr_buf.push_str(&line);
             stderr_buf.push('\n');
         }
-        on_log(format!("{stream}: {line}"));
+        // Keep captured diagnostics local to the caller.
     }
 
     Ok(std::process::Output {
@@ -520,6 +598,94 @@ mod tests {
         npm_package_bin_name, npm_package_spec, NpmPackageSpec,
     };
     use crate::resources;
+
+    #[test]
+    fn install_errors_are_actionable_without_exposing_credentials() {
+        for (diagnostic, expected) in [
+            ("E401 https://user:secret@feed.invalid", "renew authentication"),
+            ("ERR_SSL_TLS secret", "TLS verification enabled"),
+            ("ETARGET secret", "requested package version"),
+            ("unknown secret", "local npm log"),
+        ] {
+            let message = super::install_failure("adapter@1.0.0", diagnostic);
+            assert!(message.contains(expected));
+            assert!(!message.contains("secret"));
+            assert!(!message.contains("feed.invalid"));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_install_waits_and_can_cancel_without_taking_the_slot() {
+        let guard = super::lock_managed_install(&|| false).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(30),
+            super::lock_managed_install(&|| false)).await.is_err());
+        assert!(super::lock_managed_install(&|| true).await.is_err());
+        drop(guard);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1),
+            super::lock_managed_install(&|| false)).await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn installed_version_must_match_the_pin() {
+        let dir = std::env::temp_dir().join(format!("va-install-version-{}", uuid::Uuid::new_v4()));
+        let package = dir.join("node_modules/@test/adapter");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"version":"1.2.3"}"#).unwrap();
+        assert!(super::npm_package_version_satisfied_in_dir("@test/adapter@1.2.3", &dir));
+        assert!(!super::npm_package_version_satisfied_in_dir("@test/adapter@1.2.4", &dir));
+        assert!(!super::npm_package_installed_in_dir("@test/adapter@1.2.3", "missing-bin", &dir));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn readiness_checks_do_not_guess_binary_names_for_non_adapter_packages() {
+        assert_eq!(super::package_bin_name("@agentclientprotocol/claude-agent-acp@0.66.0"), Some("claude-agent-acp".to_string()));
+        assert_eq!(super::package_bin_name("@anthropic-ai/claude-code"), None);
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_reuse_a_ready_adapter_without_running_npm() {
+        let dir = std::env::temp_dir().join(format!("va-install-reuse-{}", uuid::Uuid::new_v4()));
+        let bin = dir.join("node_modules/.bin");
+        let package = dir.join("node_modules/@agentclientprotocol/claude-agent-acp");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"version":"0.66.0"}"#).unwrap();
+        std::fs::write(package.join("index.js"), "").unwrap();
+        #[cfg(windows)]
+        std::fs::write(bin.join("claude-agent-acp.cmd"), r#"@node "%~dp0/../@agentclientprotocol/claude-agent-acp/index.js""#).unwrap();
+        #[cfg(not(windows))]
+        std::fs::write(bin.join("claude-agent-acp"), "").unwrap();
+        let run = || super::auto_install_npm_package_in_dir_with_progress_and_cancel(
+            "@agentclientprotocol/claude-agent-acp@0.66.0", &dir, |_| {}, || false);
+        let (a, b) = tokio::join!(run(), run());
+        assert!(a.unwrap().stdout.is_empty());
+        assert!(b.unwrap().stdout.is_empty());
+        // An actual install would have created this file before invoking npm.
+        assert!(!dir.join("package.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads the pinned adapter using the caller's npm configuration"]
+    async fn live_adapter_install_uses_local_npm_configuration_and_reuses_result() {
+        let dir = std::env::temp_dir().join(format!("va-live-adapter-{}", uuid::Uuid::new_v4()));
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let package = "@agentclientprotocol/claude-agent-acp@0.66.0";
+        let (a, b) = tokio::join!(
+            super::auto_install_npm_package_in_dir_with_progress_and_cancel(package, &dir, |s| first.push(s), || false),
+            super::auto_install_npm_package_in_dir_with_progress_and_cancel(package, &dir, |s| second.push(s), || false),
+        );
+        a.unwrap(); b.unwrap();
+        let events: Vec<_> = first.iter().chain(second.iter()).collect();
+        assert_eq!(events.iter().filter(|s| s.starts_with("Installing adapter @")).count(), 1);
+        assert_eq!(events.iter().filter(|s| s.contains("reusing it")).count(), 1);
+        assert!(events.iter().all(|s| !s.contains("https://")));
+        assert!(super::npm_package_installed_in_dir(package, "claude-agent-acp", &dir));
+        println!("Pinned adapter installed once and reused by a concurrent request; progress contained no registry URL.");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn parses_scoped_npm_package_specs() {
