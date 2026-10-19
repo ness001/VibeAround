@@ -51,7 +51,8 @@
     "resources": [
       "../web/dist/**/*",
       "../resources/startkit/**/*",
-      "icons/32x32.png"
+      "icons/32x32.png",
+      "binaries/cloudflared/*"
     ],
     "copyright": "",
     "category": "DeveloperTool",

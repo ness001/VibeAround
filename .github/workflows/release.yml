@@ -176,6 +176,8 @@ jobs:
           Copy-Item "src/target/release/va-launch.exe" "$dist/va-launch.exe"
           Copy-Item "src/target/release/va.exe" "$dist/va.exe"
           Copy-Item "src/target/release/va-tui.exe" "$dist/va-tui.exe"
+          New-Item -ItemType Directory -Force "$dist/binaries" | Out-Null
+          Copy-Item -Recurse "src/desktop/binaries/cloudflared" "$dist/binaries/cloudflared"
 
           New-Item -ItemType Directory -Force "$dist/_up_/web" | Out-Null
           Copy-Item -Recurse "src/web/dist" "$dist/_up_/web/dist"

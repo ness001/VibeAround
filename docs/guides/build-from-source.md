@@ -111,3 +111,18 @@ Channel plugins and `@vibearound/plugin-channel-sdk` are separate repositories w
 *Last verified: v0.7.24*
 
 <sub>[◀ Build a channel plugin](build-a-channel-plugin.md) · [Documentation index](../README.md) · [Troubleshooting and FAQ ▶](troubleshooting-and-faq.md)</sub>
+
+## Bundled Cloudflare client
+
+Desktop builds prepare a pinned cloudflared release with SHA-256 verification,
+then include the executable and its Apache-2.0 license as app resources. Quick
+Tunnel uses this copy without a separate cloudflared install or PATH setup. An
+explicit Advanced path or CLOUDFLARED_PATH remains an override. The existing Node
+runtime is still required by the restricted gateway.
+
+`node scripts/prepare-cloudflared.mjs` prepares the client for the host target.
+The normal desktop sidecar preparation invokes it automatically; custom build
+commands that skip prebuild must run it first. Downloads occur at build time,
+not when opening a phone tunnel. Unsupported targets fail rather than silently
+using an executable for another architecture. Windows portable ZIPs include the
+same resource directory.
