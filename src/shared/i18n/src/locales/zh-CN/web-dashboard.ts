@@ -1,4 +1,8 @@
 export const zhCNWebDashboard: Record<string, string> = {
+  "Model, effort and context settings": "模型、思考强度和上下文设置",
+  "Close settings": "关闭设置",
+  "Context usage": "上下文用量",
+  "Context usage not reported yet": "尚未报告上下文用量",
   Terminal: "终端",
   Chat: "聊天",
   Agent: "Agent",

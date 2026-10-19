@@ -255,7 +255,7 @@ test('narrow source-derived allowlist excludes admin, bridge, preview, settings 
   ]) {
     assert.equal((await request(f.port, { path, headers: { authorization: AUTH } })).status, 404, path);
   }
-  for (const path of ['/va/api/workspaces/create', '/va/api/chat/uploads', '/va/api/settings', '/va/api/launcher/plan', '/va/api/pair/ticket']) {
+  for (const path of ['/va/api/workspaces/remove', '/va/api/chat/uploads', '/va/api/settings', '/va/api/launcher/plan', '/va/api/pair/ticket']) {
     assert.equal((await request(f.port, { path, method: 'POST', headers: { origin: ORIGIN, authorization: AUTH } })).status, 404, path);
   }
   assert.equal(f.observed.length, 0);
@@ -264,12 +264,17 @@ test('narrow source-derived allowlist excludes admin, bridge, preview, settings 
     '/va/favicon.ico', '/va/favicon-32x32.png', '/va/favicon-16x16.png', '/va/apple-touch-icon.png',
     '/va/api/service/health', '/va/api/service/info', '/va/api/pair/status?sid=a',
     '/va/api/sessions', '/va/api/profiles', '/va/api/workspaces', '/va/api/tmux/sessions',
+    '/va/api/workspaces/browse?path=C%3A%5CProjects', '/va/api/workspaces/browser-root',
     '/va/api/agents/claude-code/launch-sessions',
   ]) assert.equal((await request(f.port, { path, headers: { authorization: AUTH } })).status, 200, path);
-  for (const path of ['/va/api/pair/start', '/va/api/pair/complete', '/va/api/sessions', '/va/api/launch-sessions', '/va/api/workspace-threads/init']) {
+  for (const path of ['/va/api/pair/start', '/va/api/pair/complete', '/va/api/sessions', '/va/api/launch-sessions', '/va/api/workspace-threads/init', '/va/api/workspaces', '/va/api/workspaces/create']) {
     assert.equal((await request(f.port, { path, method: 'POST', headers: { origin: ORIGIN, authorization: AUTH } })).status, 200, path);
   }
   assert.equal((await request(f.port, { path: '/va/api/sessions/a-123', method: 'DELETE', headers: { origin: ORIGIN, authorization: AUTH } })).status, 200);
+  assert.equal((await request(f.port, { path: '/va/api/workspaces/browser-root', method: 'PUT', headers: { origin: ORIGIN, authorization: AUTH } })).status, 200);
+  for (const path of ['/va/api/workspaces', '/va/api/workspaces/create', '/va/api/settings']) {
+    assert.equal((await request(f.port, { path, method: 'PUT', headers: { origin: ORIGIN, authorization: AUTH } })).status, 404, path);
+  }
 });
 
 test('QR redemption reaches upstream unchanged but ticket minting stays local', async (t) => {
@@ -296,6 +301,37 @@ test('QR redemption reaches upstream unchanged but ticket minting stays local', 
     assert.equal((await request(f.port, {
       path: '/va/api/pair/ticket', method, headers: { origin: ORIGIN, authorization: AUTH },
     })).status, 404);
+  }
+  assert.equal(f.observed.length, observed);
+});
+
+test('browser pairing forwards public endpoints and cookies but keeps approval and revocation local', async (t) => {
+  const f = await fixture(t);
+  const headers = { origin: ORIGIN, authorization: AUTH, cookie: 'va_device=mock-device-only' };
+  for (const [method, path] of [
+    ['POST', '/va/api/pair/browser/start'],
+    ['GET', '/va/api/pair/browser/status?sid=opaque-polling-secret'],
+    ['GET', '/va/api/pair/browser/session'],
+  ]) {
+    const result = await request(f.port, { method, path, headers });
+    assert.equal(result.status, 200, path);
+    assert.equal(f.observed.at(-1).headers.cookie, headers.cookie);
+    assert.equal(f.observed.at(-1).headers.origin, ORIGIN);
+    assert.equal(f.observed.at(-1).headers['x-forwarded-for'], '192.0.2.1');
+  }
+  const observed = f.observed.length;
+  for (const [method, path] of [
+    ['GET', '/va/api/pair/browser/requests'],
+    ['POST', '/va/api/pair/browser/approve'],
+    ['POST', '/va/api/pair/browser/reject'],
+    ['GET', '/va/api/pair/devices'],
+    ['DELETE', '/va/api/pair/devices/device-id'],
+  ]) {
+    assert.equal((await request(f.port, { method, path, headers })).status, 404, path);
+  }
+  for (const path of ['/va/api/pair/browser/start', '/va/api/pair/browser/session']) {
+    const method = path.endsWith('/start') ? 'POST' : 'GET';
+    assert.equal((await request(f.port, { method, path, headers: { ...headers, origin: 'https://untrusted.invalid' } })).status, 403);
   }
   assert.equal(f.observed.length, observed);
 });

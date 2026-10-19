@@ -239,6 +239,9 @@ pub async fn complete_handler(req: Request) -> Response {
             .body(Body::empty())
             .expect("valid unauthorized response");
     };
+    if !req.extensions().get::<AuthState>().is_some_and(|auth| auth.owner.matches(&token)) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let [clear_legacy_cookie, owner_cookie] = owner_cookie_headers_for_request(&req, &token);
     Response::builder()
         .status(StatusCode::NO_CONTENT)

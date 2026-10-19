@@ -1728,7 +1728,6 @@ export function ChatView({
           showSessionSidebar={showSessionSidebar}
           onShowMobileSessions={() => setMobileSessionSidebarOpen(true)}
           onToggleSessionSidebar={() => setShowSessionSidebar((value) => !value)}
-          onNewChat={() => handleMobileSessionChange({ kind: "new" })}
           onOpenAppSidebar={onOpenAppSidebar}
         />
 

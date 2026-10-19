@@ -6,6 +6,7 @@ mod api;
 mod api_bridge;
 mod auth;
 mod bridge_recording;
+mod browser_pair;
 mod mcp;
 mod pair;
 mod preview;
@@ -242,7 +243,10 @@ pub async fn run_web_server(
         .workspace_thread_manager()
         .set_mcp_over_acp(Arc::new(mcp::AcpMcpDispatcher::new(state.clone())));
 
-    let auth_state = AuthState::new(Arc::clone(&auth_token), mcp_token);
+    let mut auth_state = AuthState::new(Arc::clone(&auth_token), mcp_token);
+    auth_state.browsers = Arc::new(common::auth::browser::BrowserRegistry::load(
+        common::config::data_dir().join("browser-devices.json"),
+    )?);
 
     // --- Protected routes: require a valid token on every request. ----------
     //
@@ -427,6 +431,17 @@ pub async fn run_web_server(
         .route("/api/pair/redeem", post(pair::redeem_handler))
         .layer(axum::middleware::from_fn(pair::no_store));
 
+    let browser_pairing = Router::new()
+        .route("/api/pair/browser/start", post(browser_pair::start_handler))
+        .route("/api/pair/browser/status", get(browser_pair::status_handler))
+        .route("/api/pair/browser/session", get(browser_pair::session_handler))
+        .route("/api/pair/browser/requests", get(browser_pair::requests_handler))
+        .route("/api/pair/browser/approve", post(browser_pair::approve_handler))
+        .route("/api/pair/browser/reject", post(browser_pair::reject_handler))
+        .route("/api/pair/devices", get(browser_pair::devices_handler))
+        .route("/api/pair/devices/{id}", delete(browser_pair::revoke_handler))
+        .layer(axum::middleware::from_fn(pair::no_store));
+
     // --- Open routes: SPA shell, static assets, and preview routes. ---------
     //
     // The SPA shell + static assets are intentionally un-authed so the initial
@@ -582,6 +597,7 @@ pub async fn run_web_server(
     let dashboard = Router::new()
         .merge(protected)
         .merge(qr_pairing)
+        .merge(browser_pairing)
         .merge(public);
 
     let app = mount_dashboard(dashboard)

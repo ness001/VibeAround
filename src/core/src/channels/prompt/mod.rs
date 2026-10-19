@@ -34,7 +34,7 @@ use crate::workspace::WorkspaceThreadManager;
 use super::plugin_host::PluginHost;
 use super::types::{ChannelEnvelope, ChannelInput, ChannelOutput};
 
-pub use handler::{send_runtime_multi_agent_state_and_replay, start_runtime_and_notify};
+pub use handler::{is_legacy_pairing_command, send_runtime_multi_agent_state_and_replay, start_runtime_and_notify};
 pub use ingress::ConversationIngress;
 #[cfg(test)]
 use ingress::ROUTE_LANE_CAPACITY;

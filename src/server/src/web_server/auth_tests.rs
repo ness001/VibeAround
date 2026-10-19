@@ -105,6 +105,44 @@ fn mcp_uses_only_the_scoped_credential() {
 }
 
 #[test]
+fn device_routes_cannot_reach_owner_or_credential_surfaces() {
+    use axum::http::Method;
+    for path in [
+        "/api/settings",
+        "/api/settings/reload",
+        "/api/pair/complete",
+        "/api/pair/ticket",
+        "/api/pair/browser/approve",
+        "/api/pair/browser/requests",
+        "/api/pair/devices",
+        "/api/launcher/plan",
+        "/api/launcher/local-agent-api",
+        "/api/model-profiles/secret",
+        "/api/channels/telegram/restart",
+        "/api/tunnels/ngrok",
+        "/ws/bridge-recording",
+        "/ws/tunnels",
+        "/ws/channels",
+        "/mcp",
+        "/local-api/test",
+        "/local-agent/test",
+        "/preview/u/test",
+        "/api/profiles/unexpected",
+        "/ws/chat/unexpected",
+    ] {
+        for method in [Method::GET, Method::POST, Method::PUT, Method::DELETE] {
+            assert!(!device_route_allowed(&method, path), "{method} {path}");
+        }
+    }
+    assert!(device_route_allowed(&Method::GET, "/ws/chat"));
+    assert!(device_route_allowed(&Method::GET, "/ws/sessions"));
+    assert!(device_route_allowed(&Method::GET, "/ws/agents/runtime"));
+    assert!(device_route_allowed(&Method::POST, "/api/sessions"));
+    assert!(device_route_allowed(&Method::GET, "/api/workspaces/browse"));
+    assert!(!device_route_allowed(&Method::POST, "/api/profiles"));
+}
+
+#[test]
 fn url_decode_handles_hex() {
     assert_eq!(url_decode("hello%20world"), "hello world");
     assert_eq!(url_decode("plain"), "plain");

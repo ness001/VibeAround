@@ -54,11 +54,18 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generationRef = useRef(0);
   const startTimeRef = useRef<number>(0);
   const pairCommand = code ? `/pair ${code}` : "";
   const qrBusy = qrStatus === "connecting" || qrStatus === "verified";
 
   const stopPolling = useCallback(() => {
+    generationRef.current += 1;
+    if (redirectTimerRef.current) {
+      clearTimeout(redirectTimerRef.current);
+      redirectTimerRef.current = null;
+    }
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -71,6 +78,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
 
   const startPairing = useCallback(async () => {
     stopPolling();
+    const generation = generationRef.current;
     setStatus("loading");
     setCode(null);
     setRemaining(CODE_TTL_SECS);
@@ -80,6 +88,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
       const res = await fetch("/va/api/pair/start", { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (generation !== generationRef.current) return;
       setCode(data.code);
       setStatus("pending");
       startTimeRef.current = Date.now();
@@ -101,6 +110,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
           const r = await fetch(`/va/api/pair/status?sid=${encodeURIComponent(data.sid)}`);
           if (!r.ok) return;
           const d = await r.json();
+          if (generation !== generationRef.current) return;
           if (d.status === "verified") {
             stopPolling();
             setStatus("verified");
@@ -116,7 +126,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
               params.get("next"),
               window.location.origin,
             );
-            setTimeout(() => {
+            redirectTimerRef.current = setTimeout(() => {
               window.location.replace(next);
             }, 500);
           } else if (d.status === "expired") {
@@ -128,7 +138,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
         }
       }, POLL_INTERVAL_MS);
     } catch {
-      setStatus("expired");
+      if (generation === generationRef.current) setStatus("expired");
     }
   }, [stopPolling]);
 
@@ -183,11 +193,13 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
       setTokenError(t("That doesn't look like a VibeAround auth token."));
       return;
     }
+    const generation = generationRef.current;
     try {
       const response = await fetch("/va/api/pair/complete", {
         method: "POST",
         headers: { Authorization: `Bearer ${trimmed}` },
       });
+      if (generation !== generationRef.current) return;
       if (!response.ok) {
         setTokenError(t("The VibeAround auth token was rejected."));
         return;
@@ -198,7 +210,7 @@ export function PairingGate({ qrPairing }: { qrPairing?: QrPairingAttempt } = {}
         pairingDestination(params.get("next"), window.location.origin),
       );
     } catch {
-      setTokenError(t("The VibeAround auth token was rejected."));
+      if (generation === generationRef.current) setTokenError(t("The VibeAround auth token was rejected."));
     }
   };
 

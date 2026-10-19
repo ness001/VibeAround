@@ -15,12 +15,16 @@ const READ_ROUTES = new Set([
   '/va/favicon.ico', '/va/favicon-32x32.png', '/va/favicon-16x16.png',
   '/va/apple-touch-icon.png',
   '/va/api/service/health', '/va/api/service/info',
-  '/va/api/pair/status', '/va/api/sessions', '/va/api/profiles',
-  '/va/api/workspaces', '/va/api/tmux/sessions',
+  '/va/api/pair/status', '/va/api/pair/browser/status', '/va/api/pair/browser/session',
+  '/va/api/sessions', '/va/api/profiles',
+  '/va/api/workspaces', '/va/api/workspaces/browse', '/va/api/workspaces/browser-root',
+  '/va/api/tmux/sessions',
 ]);
 const POST_ROUTES = new Set([
-  '/va/api/pair/start', '/va/api/pair/complete', '/va/api/pair/redeem', '/va/api/sessions',
+  '/va/api/pair/start', '/va/api/pair/complete', '/va/api/pair/redeem',
+  '/va/api/pair/browser/start', '/va/api/sessions',
   '/va/api/launch-sessions', '/va/api/workspace-threads/init',
+  '/va/api/workspaces', '/va/api/workspaces/create',
 ]);
 const WS_ROUTES = new Set(['/va/ws', '/va/ws/chat']);
 
@@ -53,6 +57,7 @@ function routeAllowed(method, path, upgrade = false) {
       || /^\/va\/api\/agents\/[A-Za-z0-9_-]+\/launch-sessions$/.test(path);
   }
   if (method === 'POST') return POST_ROUTES.has(path);
+  if (method === 'PUT') return path === '/va/api/workspaces/browser-root';
   return method === 'DELETE' && /^\/va\/api\/sessions\/[A-Za-z0-9_-]+$/.test(path);
 }
 
@@ -92,7 +97,11 @@ function forwardedHeaders(req, publicUrl, upstreamPort, upgrade) {
     }
   }
   headers.host = publicUrl.host;
-  if (req.headers.origin !== undefined) headers.origin = `http://127.0.0.1:${upstreamPort}`;
+  if (req.headers.origin !== undefined) {
+    // Device-cookie recovery validates the real same-origin Host/Origin pair.
+    headers.origin = canonicalPath(req.url)?.startsWith('/va/api/pair/browser/')
+      ? publicUrl.origin : `http://127.0.0.1:${upstreamPort}`;
+  }
   headers.forwarded = `for=192.0.2.1;proto=https;host="${publicUrl.host}"`;
   headers['x-forwarded-for'] = '192.0.2.1';
   headers['x-forwarded-host'] = publicUrl.host;

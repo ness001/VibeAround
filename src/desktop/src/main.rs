@@ -5,6 +5,7 @@ mod agent_detection;
 mod desktop_detection;
 mod onboarding;
 mod profiles;
+mod quick_tunnel;
 mod startkit;
 mod tray;
 
@@ -89,6 +90,9 @@ pub async fn start_daemon<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
 }
 
 pub async fn stop_daemon<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if let Some(tunnel) = app.try_state::<quick_tunnel::QuickTunnelState>() {
+        tunnel.stop().await;
+    }
     let controller = app
         .try_state::<DaemonController>()
         .ok_or_else(|| "daemon controller state is missing".to_string())?;
@@ -97,6 +101,9 @@ pub async fn stop_daemon<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 }
 
 pub async fn restart_daemon<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if let Some(tunnel) = app.try_state::<quick_tunnel::QuickTunnelState>() {
+        tunnel.stop().await;
+    }
     let controller = app
         .try_state::<DaemonController>()
         .ok_or_else(|| "daemon controller state is missing".to_string())?;
@@ -282,6 +289,7 @@ fn main() {
             onboarding_needed,
         )))
         .manage(StartkitRunState::default())
+        .manage(quick_tunnel::QuickTunnelState::default())
         .invoke_handler(tauri::generate_handler![
             get_auth_token,
             get_local_agent_api_token,
@@ -295,6 +303,9 @@ fn main() {
             open_external_url,
             restart_services,
             set_ui_locale,
+            quick_tunnel::quick_tunnel_status,
+            quick_tunnel::quick_tunnel_start,
+            quick_tunnel::quick_tunnel_stop,
             onboarding::get_settings,
             onboarding::list_channel_plugins,
             onboarding::save_settings,

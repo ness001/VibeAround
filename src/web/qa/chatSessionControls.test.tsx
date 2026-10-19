@@ -25,114 +25,73 @@ function render(component: React.ReactNode) {
   return renderToStaticMarkup(<I18nProvider>{component}</I18nProvider>);
 }
 
-function select(markup: string, label: string) {
-  return markup.match(new RegExp(`<select[^>]*aria-label="${label}"[^>]*>[\\s\\S]*?<\\/select>`))?.[0] ?? "";
-}
+test("settings start collapsed and do not occupy the composer with selects or help", () => {
+  const markup = render(<ChatSessionControls config={config} onChange={() => {}} />);
+  expect(markup).toContain('aria-label="Model, effort and context settings"');
+  expect(markup).toContain('aria-expanded="false"');
+  expect(markup).toContain("Custom gateway model");
+  expect(markup).not.toContain("<select");
+  expect(markup).not.toContain("Auto-compaction budget; does not expand model context");
+});
 
-test("new session controls are disabled until capabilities arrive", () => {
+test("unknown usage is not displayed as zero percent or an inferred capacity", () => {
   const markup = render(<ChatSessionControls config={null} onChange={() => {}} />);
-  expect(select(markup, "Model")).toContain(' disabled=""');
-  expect(select(markup, "Effort")).toContain("Loading session options…");
-  expect(select(markup, "Auto-compaction budget")).toContain(' disabled=""');
+  expect(markup).toContain("Context usage not reported yet");
+  expect(markup).not.toContain('aria-valuenow=');
+  expect(markup).not.toContain(">0%</span>");
   expect(markup).not.toContain("200K");
-  expect(markup).not.toContain("Context usage:");
 });
 
-test("model effort and context are selectable before the first prompt", () => {
-  const prepared = { ...config, configOptions: [...config.configOptions, {
-    configId: "effort", category: "thought_level", name: "Effort", currentValue: "high",
-    options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
-  }] };
-  const markup = render(<ChatSessionControls config={prepared} sessionStarted={false} onChange={() => {}} />);
-  for (const name of ["Model", "Effort", "Auto-compaction budget"]) {
-    expect(select(markup, name)).not.toContain(' disabled=""');
-  }
-  expect(markup).not.toContain("Available after session starts");
+test("circle reports model capacity independently of compaction budget", () => {
+  const markup = render(<ChatSessionControls config={config} usage={{ used: 42000, size: 200000 }} />);
+  expect(markup).toContain('role="meter"');
+  expect(markup).toContain('aria-valuenow="21"');
+  expect(markup).toContain("42,000 / 200,000 tokens");
+  expect(markup).toContain(">21%</span>");
+  expect(markup).toContain('stroke-dasharray="21 100"');
 });
 
-test("selects render exact advertised groups and confirmed selections", () => {
-  const markup = render(<ChatSessionControls config={config} onChange={() => {}} sessionStarted />);
-  expect(markup).toContain('<optgroup label="Gateway">');
-  expect(select(markup, "Model")).toContain('value="custom-model" selected=""');
-  expect(select(markup, "Model")).not.toContain(' disabled=""');
-  expect(select(markup, "Effort")).toContain("Not supported by this agent");
-  expect(select(markup, "Effort")).toContain(' disabled=""');
-  expect(select(markup, "Auto-compaction budget")).toContain('value="500000" selected=""');
-  expect(markup).toContain("does not expand model context");
-  expect(markup).toContain("flex-wrap");
+test("unknown capacity retains the exact token count without a fabricated percentage", () => {
+  const markup = render(<ChatSessionControls config={config} usage={{ used: 100, size: null }} />);
+  expect(markup).toContain("100 tokens (capacity unknown)");
+  expect(markup).not.toContain('aria-valuenow=');
+  expect(markup).not.toContain('stroke-dasharray=');
 });
 
-test("default labels show resolved local values without changing selection semantics", () => {
+test("meter clamps its geometry and keeps reported token counts", () => {
+  const markup = render(<ChatSessionControls config={config} usage={{ used: 220000, size: 200000 }} />);
+  expect(markup).toContain('aria-valuenow="100"');
+  expect(markup).toContain('stroke-dasharray="100 100"');
+  expect(markup).toContain("220,000 / 200,000 tokens");
+  expect(markup).toContain(">110%</span>");
+});
+
+test("tiny usage and invalid capacity do not appear as zero or NaN", () => {
+  const tiny = render(<ChatSessionControls config={config} usage={{ used: 100, size: 1000000 }} />);
+  expect(tiny).toContain("&lt;1%");
+  const invalid = render(<ChatSessionControls config={config} usage={{ used: 100, size: 0 }} />);
+  expect(invalid).not.toContain('aria-valuenow=');
+  expect(invalid).not.toContain("NaN");
+});
+
+test("summary uses confirmed model and resolved default effort", () => {
   const defaults: SessionConfigState = {
     ...config,
-    contextWindow: null,
-    contextWindowDefault: 180000,
     effortDefault: "high",
     configOptions: [...config.configOptions, {
       configId: "effort", name: "Effort", currentValue: "default",
       options: [{ value: "default", name: "Default" }, { value: "high", name: "High" }],
     }],
   };
-  const markup = render(<ChatSessionControls config={defaults} onChange={() => {}} />);
-  expect(select(markup, "Effort")).toContain('value="default" selected="">Default (High)</option>');
-  expect(select(markup, "Auto-compaction budget")).toContain('value="auto" selected="">Agent default (180K)</option>');
-  const explicit = render(<ChatSessionControls config={{ ...defaults, contextWindow: 500000 }} />);
-  expect(select(explicit, "Auto-compaction budget")).toContain('value="auto">Agent default (180K)</option>');
-  expect(select(explicit, "Auto-compaction budget")).toContain('value="500000" selected=""');
+  const markup = render(<ChatSessionControls config={defaults} />);
+  expect(markup).toContain("Custom gateway model · High");
+  expect(markup).not.toContain("Other ·");
 });
 
-test("resolved automatic context is distinguished from unreported settings", () => {
-  const markup = render(<ChatSessionControls config={{ ...config, contextWindow: null, contextWindowAutomatic: true }} />);
-  expect(select(markup, "Auto-compaction budget")).toContain('value="auto" selected="">Agent default (automatic)</option>');
-  expect(select(markup, "Auto-compaction budget")).not.toContain("not reported");
-});
-
-test("unreported defaults are explicit and are not inferred from usage or current overrides", () => {
-  const unknown: SessionConfigState = {
-    ...config,
-    configOptions: [...config.configOptions, {
-      configId: "effort", name: "Effort", currentValue: "high",
-      options: [{ value: "default", name: "Default" }, { value: "high", name: "High" }],
-    }],
-  };
-  const markup = render(<ChatSessionControls config={unknown} usage={{ used: 10, size: 1000000 }} />);
-  expect(select(markup, "Effort")).toContain("Default (not reported)");
-  expect(select(markup, "Effort")).not.toContain("Default (High)");
-  expect(select(markup, "Auto-compaction budget")).toContain("Agent default (not reported)");
-  expect(select(markup, "Auto-compaction budget")).not.toContain("Agent default (1M)");
-});
-
-test("applying disables controls and send without changing confirmed values", () => {
-  const markup = render(<ChatInput
-    value="Hello"
-    onChange={() => {}}
-    onSubmit={() => {}}
-    sessionControls={{ config, pendingConfigId: "model", onChange: () => {} }}
-  />);
+test("applying preserves summary and disables send", () => {
+  const markup = render(<ChatInput value="Hello" onChange={() => {}} onSubmit={() => {}}
+    sessionControls={{ config, pendingConfigId: "model", onChange: () => {} }} />);
   expect(markup).toContain("Applying…");
-  expect(select(markup, "Model")).toContain(' disabled=""');
-  expect(select(markup, "Model")).toContain('value="custom-model" selected=""');
+  expect(markup).toContain("Custom gateway model");
   expect(markup.match(/<button[^>]*aria-label="Send"[^>]*>/)?.[0]).toContain(' disabled=""');
-});
-
-test("usage capacity remains independent from the compaction budget", () => {
-  const markup = render(<ChatSessionControls
-    config={config}
-    usage={{ used: 42000, size: 200000 }}
-    onChange={() => {}}
-  />);
-  expect(markup).toContain("42,000 / 200,000 tokens");
-  expect(select(markup, "Auto-compaction budget")).toContain("500K");
-  const unknown = render(<ChatSessionControls config={config} usage={{ used: 100, size: null }} />);
-  expect(unknown).toContain("100 tokens (capacity unknown)");
-});
-
-test("read-only context and running-turn selectors cannot be changed", () => {
-  const readonly = render(<ChatSessionControls config={{ ...config, contextWindowEditable: false }} onChange={() => {}} />);
-  expect(select(readonly, "Auto-compaction budget")).toContain(' disabled=""');
-  expect(readonly).toContain("Start a new chat to change it.");
-  expect(readonly).toContain("Agent default");
-  const streaming = render(<ChatInput value="" onChange={() => {}} onSubmit={() => {}} isStreaming
-    sessionControls={{ config, onChange: () => {} }} />);
-  expect(select(streaming, "Model")).toContain(' disabled=""');
 });

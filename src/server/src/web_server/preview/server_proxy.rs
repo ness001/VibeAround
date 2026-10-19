@@ -360,7 +360,7 @@ fn application_cookie_header(headers: &header::HeaderMap) -> Option<header::Head
             pair.split_once('=').is_none_or(|(name, _)| {
                 !matches!(
                     name.trim(),
-                    SERVER_ROUTING_COOKIE | crate::web_server::auth::OWNER_COOKIE
+                    SERVER_ROUTING_COOKIE | crate::web_server::auth::OWNER_COOKIE | crate::web_server::auth::DEVICE_COOKIE
                 )
             })
         })
@@ -381,7 +381,7 @@ fn is_daemon_authorization(value: &header::HeaderValue, auth: &AuthState) -> boo
                 .strip_prefix("Bearer ")
                 .or_else(|| value.strip_prefix("bearer "))
         })
-        .is_some_and(|token| token.trim() == auth.owner.as_str())
+        .is_some_and(|token| auth.owner.matches(token.trim()) || auth.browsers.authenticate(token.trim()).is_some())
 }
 
 fn is_hop_by_hop_header(name: &header::HeaderName) -> bool {

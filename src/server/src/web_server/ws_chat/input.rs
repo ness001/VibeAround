@@ -57,6 +57,12 @@ pub(super) enum WebChatSessionIntent {
     },
 }
 
+pub(super) fn is_legacy_pairing_input(input: &WebChatInput) -> bool {
+    matches!(input, WebChatInput::Message {
+        input: ChannelInput::Message { envelope }, ..
+    } if common::channels::prompt::is_legacy_pairing_command(&envelope.text))
+}
+
 pub(super) fn parse_web_chat_input(
     route: &RouteKey,
     sender_id: &str,
@@ -336,6 +342,22 @@ mod tests {
     use common::routing::RouteKey;
 
     use super::*;
+
+    #[test]
+    fn device_guard_catches_legacy_pairing_in_raw_and_json_messages() {
+        for channel in ["web", "tui"] {
+            let route = RouteKey::new(channel, "device");
+            for text in ["/pair 123456", "/va pair 123456", "va /pair 123456", "/vibearound pair 123456", "vibearound /pair 123456", "  /pair\n123456  "] {
+                let raw = super::parse_web_chat_input(&route, "device-user", text).unwrap();
+                assert!(is_legacy_pairing_input(&raw), "{channel}: {text}");
+                let json = serde_json::json!({"type":"message", "text":text}).to_string();
+                let parsed = super::parse_web_chat_input(&route, "device-user", &json).unwrap();
+                assert!(is_legacy_pairing_input(&parsed), "{channel}: {json}");
+            }
+            let ordinary = super::parse_web_chat_input(&route, "device-user", "hello").unwrap();
+            assert!(!is_legacy_pairing_input(&ordinary));
+        }
+    }
 
     fn parse_web_chat_input(chat_id: &str, text: &str) -> Option<WebChatInput> {
         let route = RouteKey::new("web", chat_id);

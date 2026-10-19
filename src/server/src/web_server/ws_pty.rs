@@ -23,6 +23,7 @@ use super::{AppState, WsQuery};
 pub async fn ws_handler(
     State(state): State<AppState>,
     Query(query): Query<WsQuery>,
+    access: Option<axum::Extension<common::auth::browser::DeviceAccess>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -35,8 +36,14 @@ pub async fn ws_handler(
         if let Ok(uuid) = uuid::Uuid::parse_str(sid) {
             let session_id = SessionId(uuid);
             let pty_manager = state.pty_manager.clone();
-            return ws
-                .on_upgrade(move |socket| handle_socket_attach(socket, session_id, pty_manager));
+            return ws.on_upgrade(move |socket| async move {
+                let mut access = access.map(|access| access.0);
+                tokio::select! {
+                    biased;
+                    _ = super::auth::device_cancelled(&mut access) => {}
+                    _ = handle_socket_attach(socket, session_id, pty_manager) => {}
+                }
+            });
         }
     }
     // session_id is required; reject bare /ws connections.

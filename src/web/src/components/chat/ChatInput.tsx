@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { CHAT_ATTACHMENT_ACCEPT } from "./attachmentTypes";
 import type { ChatAttachment, SessionModeState } from "./chatTypes";
 import { ChatSessionControls, type ChatSessionControlsProps } from "./ChatSessionControls";
+import { chatToolbarButtonClassName, chatToolbarIconClassName } from "./chatToolbar";
 
 export type { ChatSessionSelection } from "./chatTypes";
 
@@ -324,12 +325,6 @@ export function ChatInput({
             )}
           </div>
         )}
-        {sessionControls && (
-          <ChatSessionControls
-            {...sessionControls}
-            disabled={disabled || isStreaming || sessionControls.disabled}
-          />
-        )}
         {queuedMode && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground">
           <span>{t("Mode will change to {{mode}} after the current turn finishes.", { mode: queuedMode.name })}</span>
           <button type="button" onClick={onCancelQueuedMode} className="rounded px-1 py-0.5 underline" aria-label={t("Cancel mode change")}>{t("Cancel")}</button>
@@ -340,7 +335,7 @@ export function ChatInput({
             variant === "hero" ? "px-3 py-2" : "px-2 py-1",
           )}
         >
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
             {onFilesSelected && (
               <>
                 <input
@@ -357,7 +352,7 @@ export function ChatInput({
                   size="icon-sm"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={disabled || attachmentsUploading}
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                  className={cn(chatToolbarButtonClassName, "w-8 shrink-0 px-0")}
                   aria-label={t("Attach files")}
                   title={t("Attach files")}
                 >
@@ -384,13 +379,20 @@ export function ChatInput({
                 }}
               />
             )}
-            <span
+            {!sessionControls && <span
               className="min-w-0 truncate px-1 text-xs font-medium text-muted-foreground"
               title={targetLabel}
             >
               {targetLabel}
-            </span>
+            </span>}
           </div>
+          {sessionControls && (
+            <ChatSessionControls
+              {...sessionControls}
+              inline
+              disabled={disabled || isStreaming || sessionControls.disabled}
+            />
+          )}
           <Button
             type="button"
             size="icon"
@@ -431,7 +433,7 @@ function CommandPicker({
           variant="ghost"
           size="icon-sm"
           disabled={disabled}
-          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+          className={cn(chatToolbarButtonClassName, "w-8 shrink-0 px-0")}
           aria-label={t("Commands")}
           title={t("Commands")}
         >
@@ -480,13 +482,13 @@ function SessionModePicker({
         <button
           type="button"
           disabled={disabled}
-          className="flex h-6 max-w-[13rem] shrink items-center gap-1 rounded-sm px-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+          className={cn(chatToolbarButtonClassName, "flex w-8 shrink-0 items-center justify-center px-0 transition-colors disabled:pointer-events-none disabled:opacity-60 sm:w-auto sm:max-w-[13rem] sm:shrink sm:px-2")}
           aria-label={`${pickerLabel}: ${selected.name}`}
-          title={disabledReason ?? t("Change mode for this session")}
+          title={disabledReason ?? `${pickerLabel}: ${selected.name}`}
         >
-          <Icon className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 truncate">{selected.name}</span>
-          <ChevronDown className="h-3 w-3 shrink-0" />
+          <Icon className={chatToolbarIconClassName} />
+          <span className="hidden min-w-0 truncate sm:block">{selected.name}</span>
+          <ChevronDown className="hidden h-3 w-3 shrink-0 sm:block" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-72">

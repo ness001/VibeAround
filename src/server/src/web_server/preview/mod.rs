@@ -196,7 +196,11 @@ fn clear_local_preview_cookies(response: &mut Response) {
 }
 
 pub(super) fn owner_access_allowed(req: &Request) -> bool {
-    owner_cookie_valid(req) || crate::web_server::auth::request_is_local_dashboard(req)
+    if owner_cookie_valid(req) { return true; }
+    if req.extensions().get::<crate::web_server::auth::AuthState>()
+        .is_some_and(|auth| crate::web_server::auth::request_uses_device_credential(req, auth))
+    { return false; }
+    crate::web_server::auth::request_is_local_dashboard(req)
 }
 
 pub(super) async fn require_owner_preview_access(req: Request, next: Next) -> Response {

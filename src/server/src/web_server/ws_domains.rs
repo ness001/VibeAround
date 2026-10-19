@@ -31,6 +31,7 @@ use super::AppState;
 
 pub async fn ws_channels_handler(
     State(state): State<AppState>,
+    access: Option<axum::Extension<common::auth::browser::DeviceAccess>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -41,11 +42,16 @@ pub async fn ws_channels_handler(
     ws.on_upgrade(move |socket| async move {
         let monitor = state.channel_hub.monitor();
         let rx = monitor.subscribe_changes();
-        run_ws_loop(socket, rx, "ws/channels", move || {
+        let session = run_ws_loop(socket, rx, "ws/channels", move || {
             let monitor = monitor.clone();
             async move { build_channels(&monitor).await }
-        })
-        .await;
+        });
+        let mut access = access.map(|access| access.0);
+        tokio::select! {
+            biased;
+            _ = super::auth::device_cancelled(&mut access) => {}
+            _ = session => {}
+        }
     })
 }
 
@@ -78,6 +84,7 @@ async fn build_channels(
 
 pub async fn ws_tunnels_handler(
     State(state): State<AppState>,
+    access: Option<axum::Extension<common::auth::browser::DeviceAccess>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -88,11 +95,16 @@ pub async fn ws_tunnels_handler(
     ws.on_upgrade(move |socket| async move {
         let tunnels = state.tunnels.clone();
         let rx = tunnels.subscribe_changes();
-        run_ws_loop(socket, rx, "ws/tunnels", move || {
+        let session = run_ws_loop(socket, rx, "ws/tunnels", move || {
             let tunnels = tunnels.clone();
             async move { build_tunnels(&tunnels).await }
-        })
-        .await;
+        });
+        let mut access = access.map(|access| access.0);
+        tokio::select! {
+            biased;
+            _ = super::auth::device_cancelled(&mut access) => {}
+            _ = session => {}
+        }
     })
 }
 
@@ -119,6 +131,7 @@ async fn build_tunnels(
 
 pub async fn ws_sessions_handler(
     State(state): State<AppState>,
+    access: Option<axum::Extension<common::auth::browser::DeviceAccess>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -129,11 +142,16 @@ pub async fn ws_sessions_handler(
     ws.on_upgrade(move |socket| async move {
         let pty_manager = state.pty_manager.clone();
         let rx = pty_manager.subscribe_changes();
-        run_ws_loop(socket, rx, "ws/sessions", move || {
+        let session = run_ws_loop(socket, rx, "ws/sessions", move || {
             let pty_manager = pty_manager.clone();
             async move { build_sessions(&pty_manager).await }
-        })
-        .await;
+        });
+        let mut access = access.map(|access| access.0);
+        tokio::select! {
+            biased;
+            _ = super::auth::device_cancelled(&mut access) => {}
+            _ = session => {}
+        }
     })
 }
 
@@ -163,6 +181,7 @@ async fn build_sessions(
 
 pub async fn ws_agents_runtime_handler(
     State(state): State<AppState>,
+    access: Option<axum::Extension<common::auth::browser::DeviceAccess>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -173,11 +192,16 @@ pub async fn ws_agents_runtime_handler(
     ws.on_upgrade(move |socket| async move {
         let workspace_threads = state.channel_hub.workspace_thread_manager();
         let rx = workspace_threads.subscribe_changes();
-        run_ws_loop(socket, rx, "ws/agents/runtime", move || {
+        let session = run_ws_loop(socket, rx, "ws/agents/runtime", move || {
             let workspace_threads = workspace_threads.clone();
             async move { build_agents_runtime(&workspace_threads).await }
-        })
-        .await;
+        });
+        let mut access = access.map(|access| access.0);
+        tokio::select! {
+            biased;
+            _ = super::auth::device_cancelled(&mut access) => {}
+            _ = session => {}
+        }
     })
 }
 

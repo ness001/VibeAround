@@ -2,6 +2,16 @@
 
 A tunnel publishes your dashboard to a public URL so you can reach it away from the machine — phone on the subway, laptop at a café. Four providers are built in; remote browsers must pair before entering protected dashboard and owner surfaces. Server and Markdown Shares use a separate six-digit access-code gate instead of owner pairing. The trust rules behind this page are in [Security model](../architecture/security-model.md).
 
+## Start a temporary phone tunnel from the desktop
+
+Open **Remote → Connect phone → Start phone tunnel**. VibeAround starts a Cloudflare Quick Tunnel and fills in the public link and ordinary link QR automatically. No Cloudflare account or terminal command is needed. Node.js and `cloudflared` must already be installed; **Advanced: Cloudflare client path** can select an existing executable. Nothing is downloaded automatically.
+
+Scan the link QR or open the link in Chrome, tap **Connect to desktop**, and approve the matching six-digit code on the computer. **Remember this phone** lasts up to 30 days on the same browser and hostname; revoke access from the connected-devices list.
+
+**Stop tunnel** disconnects remote browsers using this tunnel. Exiting the desktop stops its managed tunnel. Starting again assigns a different hostname, so saved links and remembered browser access do not transfer. The temporary tunnel is separate from the configured providers below and does not replace a named Cloudflare tunnel.
+
+This phone-only route uses the restricted gateway: phone login, chat, and terminal access retain authentication; desktop approval, device administration, settings, local API bridges, MCP, and previews are not exposed through it.
+
 ## Choosing a provider
 
 | Provider | Setting value | Needs an account | Stable hostname |

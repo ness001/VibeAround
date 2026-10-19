@@ -19,7 +19,10 @@ use axum::{
     Json,
 };
 
-use common::auth::AuthToken;
+use common::auth::{
+    browser::{BrowserRegistry, DeviceAccess},
+    AuthToken,
+};
 use std::net::SocketAddr;
 
 /// Cookie set by the pairing flow for browser owner access.
@@ -52,11 +55,26 @@ pub(crate) fn owner_cookie_headers(token: Option<&str>) -> [String; 2] {
 pub struct AuthState {
     pub owner: Arc<AuthToken>,
     pub mcp: Arc<AuthToken>,
+    pub browsers: Arc<BrowserRegistry>,
 }
 
 impl AuthState {
     pub fn new(owner: Arc<AuthToken>, mcp: Arc<AuthToken>) -> Self {
-        Self { owner, mcp }
+        Self {
+            owner,
+            mcp,
+            browsers: Arc::new(BrowserRegistry::default()),
+        }
+    }
+}
+
+pub(crate) const DEVICE_COOKIE: &str = "va_device";
+
+/// Owner sockets never cancel here; device sockets stop at revoke or expiry.
+pub(crate) async fn device_cancelled(access: &mut Option<DeviceAccess>) {
+    match access {
+        Some(access) => access.cancelled().await,
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -72,6 +90,15 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+pub(crate) fn request_uses_device_credential<B>(req: &Request<B>, state: &AuthState) -> bool {
+    extract_token(req).is_some_and(|token| state.browsers.authenticate(&token).is_some())
+        || req.headers().get_all(header::COOKIE).iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(';'))
+            .filter_map(|pair| pair.trim().split_once('='))
+            .any(|(name, token)| name == DEVICE_COOKIE && state.browsers.authenticate(token).is_some())
 }
 
 /// Extract an auth token from the request — bearer header first, then `?token=`.
@@ -207,6 +234,9 @@ pub async fn require_local_bridge(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    if request_uses_device_credential(&req, &state) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if local_bridge_access_allowed(&req, &state.owner) {
         return next.run(req).await;
     }
@@ -217,12 +247,31 @@ pub async fn require_local_bridge(
 /// axum middleware that rejects any request lacking a valid token.
 pub async fn require_auth(
     State(state): State<AuthState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     let is_mcp = req.uri().path() == "/mcp";
-    if request_is_authorized(&state, &req) {
+    let candidate = extract_token(&req);
+    let expected = if is_mcp { &state.mcp } else { &state.owner };
+    if candidate
+        .as_ref()
+        .is_some_and(|token| expected.matches(token))
+    {
+        req.extensions_mut().insert(state.clone());
         return next.run(req).await;
+    }
+    if !is_mcp {
+        if let Some(access) = candidate
+            .as_deref()
+            .and_then(|token| state.browsers.authenticate(token))
+        {
+            if !device_route_allowed(req.method(), req.uri().path()) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            req.extensions_mut().insert(state.clone());
+            req.extensions_mut().insert(access);
+            return next.run(req).await;
+        }
     }
     if is_mcp {
         // MCP clients parse the response body as JSON-RPC. Return a
@@ -245,6 +294,37 @@ pub async fn require_auth(
     StatusCode::UNAUTHORIZED.into_response()
 }
 
+/// Browser devices get the phone workspace/chat surface, never owner management,
+/// raw settings, provider secrets, launch plans containing credentials, or bridges.
+fn device_route_allowed(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    let parts = path.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    match (method, parts.as_slice()) {
+        (&Method::GET, ["ws", "chat" | "sessions" | "agents", ..]) => {
+            matches!(path, "/ws/chat" | "/ws/sessions" | "/ws/agents/runtime")
+        }
+        (&Method::GET, ["ws"]) => true,
+        (&Method::GET, ["api", "agents" | "profiles" | "sessions" | "workspaces"]) => true,
+        (&Method::GET, ["api", "service", "info"])
+        | (&Method::GET, ["api", "launcher", "preferences"])
+        | (&Method::GET, ["api", "agents", "runtime"])
+        | (&Method::GET, ["api", "tmux", "sessions"])
+        | (&Method::GET, ["api", "workspaces", "browse" | "browser-root"])
+        | (&Method::GET, ["api", "chat", "files", "download"])
+        | (&Method::GET, ["api", "agents", _, "launch-sessions"]) => true,
+        (&Method::POST, ["api", "sessions" | "launch-sessions" | "workspaces"])
+        | (&Method::POST, ["api", "chat", "uploads"])
+        | (&Method::POST, ["api", "workspaces", "create" | "remove"])
+        | (&Method::POST, ["api", "workspace-threads", "init"])
+        | (&Method::POST, ["api", "workspace-threads", _, "shutdown-host"])
+        | (&Method::POST, ["api", "agents", _, "launch-sessions", _, "archive" | "unarchive"])
+        | (&Method::PUT, ["api", "workspaces", "order" | "default" | "browser-root"])
+        | (&Method::DELETE, ["api", "sessions" | "pty", _]) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
 fn request_is_authorized<B>(state: &AuthState, req: &Request<B>) -> bool {
     let expected = if req.uri().path() == "/mcp" {
         &state.mcp

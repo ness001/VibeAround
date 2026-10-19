@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 
-import { initPairingAuth } from "../src/lib/qrPairing";
+import { initPairingAuth, watchPairingNavigation } from "../src/lib/qrPairing";
 
 const ORIGIN = "https://phone.example";
 const TICKET = "a1".repeat(32);
@@ -53,6 +53,46 @@ function setup(
     storedToken: () => storedToken,
   };
 }
+
+test("reloads once for a QR fragment delivered to an existing or restored tab", () => {
+  for (const event of ["hashchange", "pageshow"] as const) {
+    const listeners = new Map<string, () => void>();
+    let reloads = 0;
+    const browser = {
+      location: { hash: "", reload: () => { reloads += 1; } },
+      addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); },
+      removeEventListener: (type: string) => { listeners.delete(type); },
+    };
+    const stop = watchPairingNavigation(browser);
+    for (const hash of ["", "#content", "#repair=unrelated"]) {
+      browser.location.hash = hash;
+      listeners.get(event)!();
+    }
+    expect(reloads).toBe(0);
+    browser.location.hash = `#pair=${TICKET}`;
+    listeners.get(event)!();
+    listeners.get("hashchange")!();
+    listeners.get("pageshow")!();
+    expect(reloads).toBe(1);
+    expect(browser.location.hash).toBe(`#pair=${TICKET}`);
+    stop();
+    expect(listeners.size).toBe(0);
+  }
+});
+
+test("re-enters bootstrap for malformed QR fragments so validation can clean them", () => {
+  for (const hash of ["#pair", "#pair=bad", `#pair=${TICKET}&pair=${TICKET}`]) {
+    let onChange = () => {};
+    let reloads = 0;
+    watchPairingNavigation({
+      location: { hash, reload: () => { reloads += 1; } },
+      addEventListener: (type, listener) => { if (type === "hashchange") onChange = listener; },
+      removeEventListener: () => {},
+    });
+    onChange();
+    expect(reloads).toBe(1);
+  }
+});
 
 test("strips the fragment and foreign query token before clearing stale auth or fetching", async () => {
   const state = setup(`/va/?token=foreign-token&view=mobile#pair=${TICKET}`);

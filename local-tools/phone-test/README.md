@@ -1,6 +1,6 @@
 # Local phone-test helpers
 
-These scripts preserve the local Cloudflare Quick Tunnel experiment alongside the source checkout. They are not upstream VibeAround features. The initial end-to-end tests used the v0.7.25 portable application; compatibility with a source build of current main must be verified before reopening remote access.
+These scripts preserve the local Cloudflare Quick Tunnel implementation alongside the source checkout. The desktop's **Remote → Connect phone → Start phone tunnel** controls embed the same restricted gateway; these helpers remain useful for standalone operation and verification. The initial end-to-end tests used the v0.7.25 portable application; compatibility with a source build of current main must be verified before reopening remote access.
 
 ## Files
 
@@ -11,6 +11,7 @@ These scripts preserve the local Cloudflare Quick Tunnel experiment alongside th
 | `start-app.cjs` | Launch a source-built desktop executable using explicitly selected private state and workspace |
 | `verify-local.cjs` | Check authenticated local API access and inspect non-secret launch-plan fields |
 | `verify-remote.cjs` | Check public API authentication, blocked routes, login, and WebSocket upgrades |
+| `verify-browser-pairing.cjs` | Check desktop code approval, remembered browser restoration, rejection, and device revocation |
 | `verify-terminal.cjs` | Real Chromium/WebKit mobile-sized terminal handshake, keyboard, and Prompt-bar command tests using disposable shell sessions |
 | `verify-chat-controls.cjs` | Isolated real chat UI check for compaction budget, advertised model/effort choices, and acknowledged changes; refuses the primary port |
 | `verify-prestart-controls.cjs` | Select a gateway model, effort, and context budget with zero prompts, then verify the first response uses those choices |
@@ -79,6 +80,28 @@ node .\local-tools\phone-test\verify-terminal.cjs 'https://YOUR-ASSIGNED-HOST.tr
 ```
 
 Only counters and boolean results are printed, not terminal contents or credentials. This tests browser engines at mobile dimensions, not a physical phone keyboard or Safari device.
+
+### Connect without scanning
+
+With a source build containing desktop-approved browser pairing:
+
+1. On the computer, open **Remote → Connect phone** and enter the helper's current public URL.
+2. Open that ordinary URL directly in Chrome on the phone. No QR ticket or owner token is needed.
+3. Optionally select **Remember this phone**, then request a desktop connection.
+4. On the computer, compare the six-digit code under pending browser requests with the code displayed on the phone. Approve only the matching request.
+5. Revoke a paired browser from the desktop's connected-browser list when access is no longer wanted.
+
+Remembered access uses a separate per-device credential in a secure HttpOnly cookie, not the shared owner token. It is limited to the same public hostname and expires after at most 30 days. Quick Tunnel restarts change the hostname, so a new hostname requires pairing again. Browser site-data clearing also removes remembered access. Revocation denies subsequent API requests and closes device-authenticated WebSockets; it does not roll back commands or files already changed by an agent.
+
+The gateway exposes only browser start/status/session endpoints. Approval, rejection, device listing, and revocation stay local to the computer and require the desktop owner credential.
+
+To verify this flow without starting agents, configure `PLAYWRIGHT_MODULE`, `CHROMIUM_EXECUTABLE` if needed, and `VIBEAROUND_DATA_DIR`, then run:
+
+```powershell
+node .\local-tools\phone-test\verify-browser-pairing.cjs 'https://YOUR-ASSIGNED-HOST.trycloudflare.com/va/'
+```
+
+This creates its own browser request and device, approves that matching code, tests cookie restoration, then revokes only that test device. It also checks rejection and closes its browser contexts. Do not approve unrelated pending requests during this test.
 
 ### Scan to connect
 

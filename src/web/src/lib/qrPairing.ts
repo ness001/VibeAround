@@ -21,6 +21,28 @@ type PairingDependencies = {
   redirect: (destination: string) => void;
 };
 
+type PairingNavigationBrowser = {
+  location: Pick<Location, "hash" | "reload">;
+  addEventListener: (type: "hashchange" | "pageshow", listener: () => void) => void;
+  removeEventListener: (type: "hashchange" | "pageshow", listener: () => void) => void;
+};
+
+/** Re-enter bootstrap when a QR opens in an already-loaded browser tab. */
+export function watchPairingNavigation(browser: PairingNavigationBrowser): () => void {
+  let reloading = false;
+  const onNavigation = () => {
+    if (reloading || !new URLSearchParams(browser.location.hash.slice(1)).has("pair")) return;
+    reloading = true;
+    browser.location.reload();
+  };
+  browser.addEventListener("hashchange", onNavigation);
+  browser.addEventListener("pageshow", onNavigation);
+  return () => {
+    browser.removeEventListener("hashchange", onNavigation);
+    browser.removeEventListener("pageshow", onNavigation);
+  };
+}
+
 /** Strip the one-use credential before auth initialization or rendering. */
 export function initPairingAuth(
   browser: PairingBrowser,

@@ -4,7 +4,6 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  Plus,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -28,7 +27,6 @@ interface ChatHeaderProps {
   showSessionSidebar: boolean;
   onShowMobileSessions: () => void;
   onToggleSessionSidebar: () => void;
-  onNewChat: () => void;
   onOpenAppSidebar?: () => void;
 }
 
@@ -47,7 +45,6 @@ export function ChatHeader({
   showSessionSidebar,
   onShowMobileSessions,
   onToggleSessionSidebar,
-  onNewChat,
   onOpenAppSidebar,
 }: ChatHeaderProps) {
   const { t } = useI18n();
@@ -127,16 +124,6 @@ export function ChatHeader({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <Button
-          type="button"
-          onClick={onNewChat}
-          className="h-11 shrink-0 gap-1.5 px-3 font-semibold shadow-sm sm:h-9"
-          aria-label={t("New chat")}
-          title={t("New chat")}
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t("New chat")}
-        </Button>
         <div
           className={
             connected

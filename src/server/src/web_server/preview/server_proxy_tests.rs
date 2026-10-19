@@ -55,6 +55,23 @@ fn unique_temp_dir(label: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn device_credentials_are_never_forwarded_to_preview_apps() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(header::COOKIE, "va_device=secret; app=value; va_owner=owner; va_preview_server=route".parse().unwrap());
+    assert_eq!(super::application_cookie_header(&headers).unwrap(), "app=value");
+    let auth = auth_state();
+    let start = auth.browsers.start(false, "Phone".into()).unwrap();
+    let id = auth.browsers.requests()[0].id.clone();
+    auth.browsers.approve(&id, &start.code).unwrap();
+    let common::auth::browser::PairStatus::Verified { token, .. } = auth.browsers.status(&start.sid) else { panic!("not verified") };
+    assert!(is_daemon_authorization(&format!("Bearer {token}").parse().unwrap(), &auth));
+    let mut request = proxy_request_for("/preview/u/test", Method::GET, None, &auth);
+    request.headers_mut().insert(header::HOST, "localhost:12358".parse().unwrap());
+    request.headers_mut().insert(header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+    assert!(!super::super::owner_access_allowed(&request));
+}
+
+#[test]
 fn owner_routing_is_daemon_bound_and_share_routing_revalidates_the_grant() {
     let dir = unique_temp_dir("signature");
     let (slug, share) = common::previews::ensure_server(4318, dir.clone(), "server".into());

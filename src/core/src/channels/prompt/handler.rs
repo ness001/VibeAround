@@ -951,6 +951,11 @@ fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Use the same canonical command parser at restricted transport boundaries.
+pub fn is_legacy_pairing_command(text: &str) -> bool {
+    matches!(parse_thread_command(text), Some(ThreadCommand::Pair(_)))
+}
+
 fn parse_thread_command(text: &str) -> Option<ThreadCommand> {
     let normalized = collapse_whitespace(text);
     let normalized = canonical_thread_command(&normalized);

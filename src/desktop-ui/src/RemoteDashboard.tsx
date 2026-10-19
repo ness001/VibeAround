@@ -459,12 +459,12 @@ export function RemoteDashboard({
               </RemoteSidebarSection>
 
               <RemoteSidebarSection
-                title={t("Remote access")}
+                title={t("Configured tunnels")}
                 count={tunnels.tunnels.length}
                 className="mt-5"
               >
                 {tunnels.tunnels.length === 0 ? (
-                  <EmptySidebarItem label={t("No tunnel running")} />
+                  <EmptySidebarItem label={t("Temporary phone tunnel is managed in Connect phone.")} />
                 ) : (
                   tunnels.tunnels.map((tunnel) => {
                     const presentation = tunnelPresentation(tunnel.status, t);
