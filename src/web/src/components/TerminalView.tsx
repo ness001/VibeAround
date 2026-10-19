@@ -8,6 +8,7 @@ import { getToolTheme } from "@/lib/terminal-types";
 import { useTheme } from "@/lib/theme";
 import { buildXtermTheme } from "@/lib/xtermPalette";
 import { getWebSocketUrl } from "@/lib/ws-url";
+import { installTerminalTouchScroll } from "./terminalTouchScroll";
 
 /** "dom" = default DOM renderer; "canvas" = Canvas addon; "webgl" = WebGL addon (GPU). */
 const XTERM_RENDERER: "dom" | "canvas" | "webgl" = "webgl";
@@ -143,40 +144,8 @@ export function TerminalView({ session, isActive, viewMode, onSessionState, onSe
     // OSC 10/11 color queries are intercepted server-side in pty.rs (OscColorResponder)
     // so TUI apps get instant replies without waiting for the WebSocket round-trip.
 
-    // Mobile: bridge touch → term.scrollLines() (xterm.js doesn't natively handle touch scroll with WebGL/Canvas).
-    let removeTouchScroll: (() => void) | null = null;
-    if (isMobile && fitTargetRef.current) {
-      const touchEl = fitTargetRef.current;
-      let startY = 0;
-      let accum = 0;
-      const rowPx = () => {
-        const dims = fitAddon.proposeDimensions();
-        if (dims && dims.rows > 0) return touchEl.clientHeight / dims.rows;
-        return 18;
-      };
-      const onTouchStart = (e: TouchEvent) => {
-        startY = e.touches[0].clientY;
-        accum = 0;
-      };
-      const onTouchMove = (e: TouchEvent) => {
-        const dy = startY - e.touches[0].clientY;
-        startY = e.touches[0].clientY;
-        accum += dy;
-        const rh = rowPx();
-        const lines = Math.trunc(accum / rh);
-        if (lines !== 0) {
-          term.scrollLines(lines);
-          accum -= lines * rh;
-        }
-        e.preventDefault();
-      };
-      touchEl.addEventListener("touchstart", onTouchStart, { passive: true });
-      touchEl.addEventListener("touchmove", onTouchMove, { passive: false });
-      removeTouchScroll = () => {
-        touchEl.removeEventListener("touchstart", onTouchStart);
-        touchEl.removeEventListener("touchmove", onTouchMove);
-      };
-    }
+    // Install for touch input regardless of UA (iPad desktop mode uses a Mac UA).
+    const removeTouchScroll = installTerminalTouchScroll(fitTargetRef.current, term);
     // Sync fit once after mount so cols/rows match the visible area (layout may not be final yet).
     const syncFit = () => {
       try {
