@@ -25,7 +25,6 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const NPM_REGISTRY_GLOBAL: &str = "https://registry.npmjs.org";
 const NPM_REGISTRY_CN: &str = "https://registry.npmmirror.com";
 
 /// These mark a Claude tool subprocess, not an independent user-launched session.
@@ -106,9 +105,8 @@ pub fn silent_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
 
 /// Return npm registry flags for installs started from VibeAround.
 ///
-/// Startkit lets users choose a download source during onboarding. Native
-/// Startkit scripts get the source through `STARTKIT_NPM_REGISTRY`; Rust-side
-/// npm installs for ACP adapters and channel plugins need the same policy.
+/// Inherit npm configuration by default (including registry, scopes and auth).
+/// Only explicit environment overrides or the selected China mirror add a flag.
 pub fn npm_registry_args() -> Vec<String> {
     npm_registry_url()
         .map(|registry| vec!["--registry".to_string(), registry])
@@ -116,13 +114,8 @@ pub fn npm_registry_args() -> Vec<String> {
 }
 
 pub fn npm_registry_url() -> Option<String> {
-    for key in ["STARTKIT_NPM_REGISTRY", "VIBEAROUND_NPM_REGISTRY"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
+    if let Some(registry) = npm_registry_override() {
+        return Some(registry);
     }
 
     let path = crate::config::data_dir().join("settings.json");
@@ -184,7 +177,7 @@ pub async fn npm_process(
     let mut node_args: Vec<String> = vec![npm_cli.to_string_lossy().to_string()];
     node_args.extend(args.iter().cloned());
 
-    tracing::info!("[npm] node {} {}", npm_cli.display(), args.join(" "));
+    tracing::info!("[npm] starting {} (registry/auth values omitted)", args.first().map(String::as_str).unwrap_or("command"));
     let mut command = command("node");
     command
         .args(&node_args)
@@ -194,10 +187,23 @@ pub async fn npm_process(
     Ok(command)
 }
 
+/// Explicit process overrides only, without consulting saved onboarding choices.
+pub fn npm_registry_override() -> Option<String> {
+    explicit_npm_registry(
+        std::env::var("STARTKIT_NPM_REGISTRY").ok().as_deref(),
+        std::env::var("VIBEAROUND_NPM_REGISTRY").ok().as_deref(),
+    )
+}
+
+fn explicit_npm_registry(startkit: Option<&str>, vibearound: Option<&str>) -> Option<String> {
+    [startkit, vibearound].into_iter().flatten().map(str::trim)
+        .find(|value| !value.is_empty()).map(str::to_string)
+}
+
 fn npm_registry_for_source(source: &str) -> Option<&'static str> {
     match source {
         "cn" => Some(NPM_REGISTRY_CN),
-        "global" => Some(NPM_REGISTRY_GLOBAL),
+        "global" => None,
         _ => None,
     }
 }
@@ -868,9 +874,26 @@ mod registry_tests {
     use super::*;
 
     #[test]
+    fn registry_override_is_explicit_and_blank_values_fall_through() {
+        assert_eq!(explicit_npm_registry(None, None), None);
+        assert_eq!(explicit_npm_registry(Some(" "), Some("")), None);
+        assert_eq!(explicit_npm_registry(Some(" "), Some(" https://feed.example/npm/ ")),
+            Some("https://feed.example/npm/".to_string()));
+        assert_eq!(explicit_npm_registry(Some("https://first.example"), Some("https://second.example")),
+            Some("https://first.example".to_string()));
+    }
+
+    #[test]
+    fn startkit_default_does_not_embed_a_registry_override() {
+        let manifest: toml::Value = toml::from_str(include_str!("../../../resources/startkit/settings.toml")).unwrap();
+        assert_eq!(manifest["sources"]["global"]["npm_registry"].as_str(), Some(""));
+        assert_eq!(manifest["sources"]["cn"]["npm_registry"].as_str(), Some(NPM_REGISTRY_CN));
+    }
+
+    #[test]
     fn maps_startkit_sources_to_npm_registries() {
         assert_eq!(npm_registry_for_source("cn"), Some(NPM_REGISTRY_CN));
-        assert_eq!(npm_registry_for_source("global"), Some(NPM_REGISTRY_GLOBAL));
+        assert_eq!(npm_registry_for_source("global"), None);
         assert_eq!(npm_registry_for_source("custom"), None);
     }
 }

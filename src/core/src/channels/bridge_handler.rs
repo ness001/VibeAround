@@ -385,6 +385,10 @@ fn delivery_targets(
 
 #[async_trait::async_trait]
 impl AgentClientHandler for ChannelBridgeHandler {
+    async fn startup_status(&self, message: &str) {
+        self.send_system_text(message).await;
+    }
+
     fn mcp_server(&self) -> Option<Arc<dyn crate::agent::AcpMcpServer>> {
         self.workspace_threads.upgrade()?.mcp_over_acp()
     }

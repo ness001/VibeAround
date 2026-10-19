@@ -179,7 +179,13 @@ fn apply_startkit_env(
         "STARTKIT_ITEM_MANAGED",
         if managed_item_active { "true" } else { "false" },
     );
-    command.env("STARTKIT_NPM_REGISTRY", &source.npm_registry);
+    // Never turn the default source into a forced public registry. Preserve
+    // explicit environment overrides; otherwise let npm read its own config.
+    if let Some(registry) = common::process::env::npm_registry_override()
+        .or_else(|| (!source.npm_registry.trim().is_empty()).then(|| source.npm_registry.clone()))
+    {
+        command.env("STARTKIT_NPM_REGISTRY", registry);
+    }
     command.env("STARTKIT_NODE_INDEX_URL", &source.node_index);
     command.env("STARTKIT_NODE_DIST_BASE", &source.node_dist);
     command.env(
