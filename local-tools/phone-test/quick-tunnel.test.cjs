@@ -552,3 +552,24 @@ test('automatic expiry kills child and destroys an active WebSocket', async (t) 
   assert.deepEqual(fake.child.killCalls, ['SIGTERM']);
   assert.equal(running.gateway.server.listening, false);
 });
+
+test('phone archive and unarchive reach upstream with authentication and exact workspace body', async (t) => {
+  const f = await fixture(t);
+  for (const action of ['archive', 'unarchive']) {
+    const path = `/va/api/agents/claude/launch-sessions/session-123/${action}`;
+    const body = JSON.stringify({ workspace_path: 'C:\\test-workspace' });
+    const response = await request(f.port, { path, method: 'POST', body,
+      headers: { origin: ORIGIN, authorization: AUTH, 'content-type': 'application/json' } });
+    assert.equal(response.status, 200);
+    assert.equal(f.observed.at(-1).url, path);
+    assert.equal(f.observed.at(-1).body, body);
+    assert.equal((await request(f.port, { path, method: 'POST', headers: { origin: ORIGIN } })).status, 401);
+    assert.equal((await request(f.port, { path, method: 'POST', headers: { authorization: AUTH } })).status, 403);
+    assert.equal((await request(f.port, { path, method: 'DELETE', headers: { origin: ORIGIN, authorization: AUTH } })).status, 404);
+  }
+  for (const path of ['/va/api/agents/claude/launch-sessions/session-123/delete',
+    '/va/api/agents/claude/launch-sessions/session-123/archive/extra',
+    '/va/api/agents/claude/launch-sessions/../archive']) {
+    assert.notEqual((await request(f.port, { path, method: 'POST', headers: { origin: ORIGIN, authorization: AUTH } })).status, 200);
+  }
+});
