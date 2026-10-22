@@ -56,7 +56,10 @@ function routeAllowed(method, path, upgrade = false) {
       || /^\/va\/(?:assets|brand)\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(path)
       || /^\/va\/api\/agents\/[A-Za-z0-9_-]+\/launch-sessions$/.test(path);
   }
-  if (method === 'POST') return POST_ROUTES.has(path);
+  if (method === 'POST') {
+    return POST_ROUTES.has(path)
+      || /^\/va\/api\/agents\/[A-Za-z0-9_-]+\/launch-sessions\/[A-Za-z0-9_-]+\/(?:archive|unarchive)$/.test(path);
+  }
   if (method === 'PUT') return path === '/va/api/workspaces/browser-root';
   return method === 'DELETE' && /^\/va\/api\/sessions\/[A-Za-z0-9_-]+$/.test(path);
 }
