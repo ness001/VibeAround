@@ -13,6 +13,21 @@ use tauri::{
 };
 
 use crate::{AppTunnels, OnboardingActive};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+// Daily log names end with a date, not a registered Windows file extension.
+// Use Notepad explicitly so opening a log never asks for a file association.
+fn open_log_file() -> std::io::Result<std::process::ExitStatus> {
+    let path = common::logging::current_log_file()?;
+    #[cfg(target_os = "windows")]
+    {
+        open::with(path, "notepad.exe")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        open::that(path)
+    }
+}
 
 pub(crate) const LAUNCH_CONFIG_CHANGED_EVENT: &str = "launch-config-changed";
 
@@ -23,6 +38,7 @@ const MENU_LAUNCH_DEFAULT: &str = "launch_default";
 const MENU_SHOW_WINDOW: &str = "show_window";
 const MENU_OPEN_LOCAL: &str = "open_local";
 const MENU_OPEN_TUNNEL: &str = "open_tunnel";
+const MENU_OPEN_LOG: &str = "open_log";
 const MENU_QUIT: &str = "quit";
 const MENU_LAUNCH_DIRECT_PREFIX: &str = "launch_direct:";
 const MENU_LAUNCH_PROFILE_PREFIX: &str = "launch_profile:";
@@ -61,6 +77,7 @@ impl UiLocale {
                 TrayText::LaunchWithoutProfile => "不使用 Profile 启动",
                 TrayText::OpenDashboard => "打开 Dashboard",
                 TrayText::OpenTunnel => "打开隧道",
+                TrayText::OpenLog => "打开日志文件",
                 TrayText::Bridge => "代理",
                 TrayText::Quit => "退出",
             },
@@ -75,6 +92,7 @@ enum TrayText {
     LaunchWithoutProfile,
     OpenDashboard,
     OpenTunnel,
+    OpenLog,
     Bridge,
     Quit,
 }
@@ -87,6 +105,7 @@ impl TrayText {
             Self::LaunchWithoutProfile => "Launch Without Profile",
             Self::OpenDashboard => "Open Dashboard",
             Self::OpenTunnel => "Open Tunnel",
+            Self::OpenLog => "Open Log File",
             Self::Bridge => "bridge",
             Self::Quit => "Quit",
         }
@@ -149,6 +168,16 @@ pub fn setup<R: Runtime>(app: &App<R>) -> Result<(), Box<dyn std::error::Error>>
                         let dashboard_url = format!("{}/va", url.trim_end_matches('/'));
                         let _ = open::that(tunnel_url_with_token(&dashboard_url));
                     }
+                }
+            }
+            MENU_OPEN_LOG => {
+                if let Err(error) = open_log_file() {
+                    tracing::warn!(%error, "[tray] failed to open log file");
+                    app.dialog()
+                        .message(error.to_string())
+                        .title(current_locale().text(TrayText::OpenLog))
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
                 }
             }
             MENU_QUIT => {
@@ -232,6 +261,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         MenuItemBuilder::with_id(MENU_OPEN_TUNNEL, locale.text(TrayText::OpenTunnel))
             .enabled(launch_enabled && has_tunnel_url)
             .build(app)?;
+    let open_log_item =
+        MenuItemBuilder::with_id(MENU_OPEN_LOG, locale.text(TrayText::OpenLog)).build(app)?;
     let quit_item = MenuItemBuilder::with_id(MENU_QUIT, locale.text(TrayText::Quit)).build(app)?;
 
     let mut builder = MenuBuilder::new(app)
@@ -247,6 +278,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(&open_local_item)
         .item(&open_tunnel_item)
+        .item(&open_log_item)
         .separator()
         .item(&quit_item)
         .build()
@@ -500,6 +532,12 @@ mod tests {
 
     use common::profiles::connections::ProfileLaunchTarget;
     use common::profiles::schema::{AuthMode, ProfileApiConfig, ProfileDef, ProviderSettings};
+
+    #[test]
+    fn open_log_label_is_localized() {
+        assert_eq!(UiLocale::En.text(TrayText::OpenLog), "Open Log File");
+        assert_eq!(UiLocale::ZhCn.text(TrayText::OpenLog), "打开日志文件");
+    }
 
     fn profile(id: &str, label: &str, api_types: &[&str]) -> ProfileDef {
         ProfileDef {
