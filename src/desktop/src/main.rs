@@ -1,5 +1,5 @@
-// Prevents additional console window on Windows in release
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The desktop app never needs a separate console, including debug builds.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod agent_detection;
 mod desktop_detection;
@@ -245,7 +245,7 @@ fn set_ui_locale<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(), St
 }
 
 fn main() {
-    common::logging::init();
+    common::logging::init_desktop();
     if let Err(error) = common::migration::run() {
         tracing::error!(%error, "configuration migration failed");
         eprintln!("VibeAround configuration migration failed: {error}");
