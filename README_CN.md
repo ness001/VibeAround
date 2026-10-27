@@ -10,6 +10,11 @@
 
 </div>
 
+> [!IMPORTANT]
+> **停止维护说明：** 我将不再维护这个 VibeAround 分支，已转用 [Agent of Empires（AoE）](https://github.com/agent-of-empires/agent-of-empires)。它更全面的功能更能满足我的使用需求。
+>
+> 在 AoE 中，Agent 会话内部的编排，包括子代理的调度决策与执行，由底层编程代理运行时（例如 Claude Code）负责。AoE 管理外围会话，不自行实现这些运行时内部的子代理编排逻辑。
+
 <table align="center">
   <tr>
     <td width="50%" align="center">
