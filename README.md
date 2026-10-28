@@ -10,11 +10,6 @@
 
 </div>
 
-> [!IMPORTANT]
-> **Maintenance notice:** I no longer maintain this fork of VibeAround. I have switched to [Agent of Empires (AoE)](https://github.com/agent-of-empires/agent-of-empires), whose broader feature set better covers my needs.
->
-> In AoE, orchestration within an agent session, including subagent decisions and execution, is handled by the underlying coding-agent runtime (for example, Claude Code). AoE manages the surrounding sessions rather than implementing that runtime's internal subagent orchestration.
-
 <table align="center">
   <tr>
     <td width="50%" align="center">
